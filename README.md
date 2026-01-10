@@ -257,6 +257,181 @@ Cursor will use the MCP server to answer based on your actual data lineage!
 
 ---
 
+## 📝 Recent Updates
+
+See [UPDATE.md](UPDATE.md) for the latest features and enhancements.
+
+---
+
+## ⚙️ Database Configuration (`config/db_config.py`)
+
+The `db_config.py` file provides flexible, auto-detecting configuration that works with multiple database types. It automatically finds your database and SQL files, or you can configure it manually.
+
+### How It Works
+
+**Auto-Detection (Default):**
+The system automatically searches for:
+- **Database files**: `*.duckdb` in common locations:
+  - `data/*.duckdb`
+  - `companies_data/*.duckdb`
+  - `*.duckdb` (project root)
+  - `database/*.duckdb`
+  - `db/*.duckdb`
+
+- **SQL/ETL directories**: Common folder names:
+  - `etl/`
+  - `sql/`
+  - `transformations/`
+  - `data/etl/`
+  - `companies_data/etl/`
+  - `dbt/models/`
+
+### Configuration Methods
+
+#### Method 1: Environment Variables (Recommended)
+
+Set environment variables for explicit control:
+
+**Windows (PowerShell):**
+```powershell
+$env:DEBUG_AI_DB_PATH = "C:\DataLake\warehouse.duckdb"
+$env:DEBUG_AI_ETL_DIR = "C:\DataLake\etl"
+$env:DEBUG_AI_DB_TYPE = "duckdb"
+```
+
+**Windows (Command Prompt):**
+```cmd
+set DEBUG_AI_DB_PATH=C:\DataLake\warehouse.duckdb
+set DEBUG_AI_ETL_DIR=C:\DataLake\etl
+set DEBUG_AI_DB_TYPE=duckdb
+```
+
+**Linux/Mac:**
+```bash
+export DEBUG_AI_DB_PATH="/path/to/warehouse.duckdb"
+export DEBUG_AI_ETL_DIR="/path/to/etl"
+export DEBUG_AI_DB_TYPE="duckdb"
+```
+
+#### Method 2: Default Locations
+
+Simply place your files in standard locations:
+- Database: `data/warehouse.duckdb` or `companies_data/corporate.duckdb`
+- SQL files: `etl/` or `sql/` folder in project root
+
+#### Method 3: Check Configuration
+
+Verify what was detected:
+```powershell
+python config/db_config.py
+```
+
+Output example:
+```
+============================================================
+📒 DEBUG AI - Configuration Check
+============================================================
+
+  ✅ project_root
+     └─ C:\Users\John\debug_ai
+  ✅ database
+     └─ C:\Users\John\debug_ai\companies_data\corporate.duckdb
+  ✅ etl_directory
+     └─ C:\Users\John\debug_ai\companies_data\etl
+  ℹ️  db_type: duckdb
+
+============================================================
+```
+
+### Using Different Database Types
+
+The system supports multiple database backends. Configure via `DEBUG_AI_DB_TYPE` environment variable.
+
+#### DuckDB (Default)
+
+No additional configuration needed if using file-based DuckDB:
+
+```powershell
+$env:DEBUG_AI_DB_PATH = "C:\Data\warehouse.duckdb"
+$env:DEBUG_AI_DB_TYPE = "duckdb"  # Optional, this is the default
+```
+
+#### Databricks
+
+Set these environment variables:
+
+```powershell
+$env:DEBUG_AI_DB_TYPE = "databricks"
+$env:DATABRICKS_HOST = "your-workspace.cloud.databricks.com"
+$env:DATABRICKS_TOKEN = "your-personal-access-token"
+$env:DATABRICKS_WAREHOUSE_ID = "your-warehouse-id"
+```
+
+**Note:** Databricks connector needs to be implemented in `scripts/debug_engine.py`. Currently, the structure supports it but requires implementation.
+
+#### Snowflake
+
+Set these environment variables:
+
+```powershell
+$env:DEBUG_AI_DB_TYPE = "snowflake"
+$env:SNOWFLAKE_ACCOUNT = "your-account"
+$env:SNOWFLAKE_USER = "your-username"
+$env:SNOWFLAKE_PASSWORD = "your-password"
+$env:SNOWFLAKE_WAREHOUSE = "your-warehouse"
+$env:SNOWFLAKE_DATABASE = "your-database"
+```
+
+**Note:** Snowflake connector needs to be implemented in `scripts/debug_engine.py`. Currently, the structure supports it but requires implementation.
+
+### Adding Custom Database Types
+
+To add support for a new database type:
+
+1. **Edit `config/db_config.py`:**
+   Add a new branch in the `get_db_config()` function:
+
+   ```python
+   elif DB_TYPE == 'your_database':
+       config['connection_details'] = {
+           'host': os.getenv('YOUR_DB_HOST'),
+           'port': os.getenv('YOUR_DB_PORT', '5432'),
+           'database': os.getenv('YOUR_DB_NAME'),
+           'user': os.getenv('YOUR_DB_USER'),
+           'password': os.getenv('YOUR_DB_PASSWORD'),
+       }
+   ```
+
+2. **Implement the connector in `scripts/debug_engine.py`:**
+   Update the `DatabaseConnector` class to handle your database type, implementing:
+   - Connection logic
+   - Query execution
+   - Schema/table discovery
+   - Column type detection
+
+3. **Set environment variable:**
+   ```powershell
+   $env:DEBUG_AI_DB_TYPE = "your_database"
+   ```
+
+### Environment Variables Reference
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DEBUG_AI_DB_PATH` | Path to database file (DuckDB) | `C:\Data\warehouse.duckdb` |
+| `DEBUG_AI_ETL_DIR` | Path to SQL/ETL directory | `C:\Data\etl` |
+| `DEBUG_AI_DB_TYPE` | Database type | `duckdb`, `databricks`, `snowflake` |
+| `DATABRICKS_HOST` | Databricks workspace URL | `workspace.cloud.databricks.com` |
+| `DATABRICKS_TOKEN` | Databricks access token | `dapi...` |
+| `DATABRICKS_WAREHOUSE_ID` | Databricks SQL warehouse ID | `abc123...` |
+| `SNOWFLAKE_ACCOUNT` | Snowflake account identifier | `xy12345` |
+| `SNOWFLAKE_USER` | Snowflake username | `admin` |
+| `SNOWFLAKE_PASSWORD` | Snowflake password | `password123` |
+| `SNOWFLAKE_WAREHOUSE` | Snowflake warehouse name | `COMPUTE_WH` |
+| `SNOWFLAKE_DATABASE` | Snowflake database name | `PRODUCTION` |
+
+---
+
 ## 📋 CLI Commands
 
 | Command | What It Does |

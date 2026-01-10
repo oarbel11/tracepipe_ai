@@ -508,6 +508,377 @@ class DebugEngine:
         except Exception as e:
             return {"error": str(e)}
 
+    def detect_duplicates(self, table: str, columns: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        🔍 Detect duplicate rows in a table.
+
+        If columns not specified, checks all columns for exact duplicates.
+        If columns specified, checks for duplicates based on those columns.
+
+        Args:
+            table: Table to check
+            columns: Optional list of columns to check. If None, checks all columns.
+
+        Returns:
+            Dict with duplicate information and explanation
+        """
+        validate_identifier(table, 'table')
+
+        try:
+            # Get table structure
+            table_info = self.describe_table(table)
+            all_columns = [col['column_name'] for col in table_info]
+
+            if columns:
+                # Validate specified columns exist
+                for col in columns:
+                    validate_identifier(col, 'column')
+                    if col not in all_columns:
+                        return {"error": f"Column '{col}' not found in table {table}"}
+                check_columns = columns
+            else:
+                check_columns = all_columns
+
+            if not check_columns:
+                return {"error": f"Table {table} has no columns to check"}
+
+            # Build safe column list
+            cols_str = ', '.join(check_columns)
+            
+            # Query to find duplicates
+            duplicate_query = f"""
+                SELECT {cols_str}, COUNT(*) as duplicate_count
+                FROM {table}
+                GROUP BY {cols_str}
+                HAVING COUNT(*) > 1
+                ORDER BY duplicate_count DESC
+            """
+
+            duplicates_df = self.connector.execute(duplicate_query)
+
+            if duplicates_df.empty:
+                return {
+                    "has_duplicates": False,
+                    "table": table,
+                    "columns_checked": check_columns,
+                    "message": f"No duplicates found in {table}"
+                }
+
+            # Get total duplicate rows count
+            total_duplicate_rows = duplicates_df['duplicate_count'].sum() - len(duplicates_df)
+
+            # Get sample duplicate records
+            duplicate_groups = duplicates_df.head(10).to_dict(orient='records')
+
+            # Generate explanation
+            explanation = self._explain_duplicates(table, check_columns, duplicate_groups, total_duplicate_rows)
+
+            return {
+                "has_duplicates": True,
+                "table": table,
+                "columns_checked": check_columns,
+                "duplicate_groups_count": len(duplicates_df),
+                "total_duplicate_rows": int(total_duplicate_rows),
+                "duplicate_groups": duplicate_groups,
+                "explanation": explanation,
+                "recommendation": self._suggest_duplicate_fix(table, check_columns)
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    def validate_business_rules(self, table: str, rules: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        ✅ Validate data against business rules.
+
+        Args:
+            table: Table to validate
+            rules: List of SQL WHERE clause conditions. If None, auto-detects common rules.
+
+        Returns:
+            Dict with validation results for each rule
+        """
+        validate_identifier(table, 'table')
+
+        try:
+            if not rules:
+                # Auto-detect common business rules based on column names and types
+                rules = self._auto_detect_rules(table)
+
+            if not rules:
+                return {
+                    "error": "No business rules found to validate",
+                    "hint": "Specify rules manually or ensure table has columns with standard naming patterns"
+                }
+
+            table_info = self.describe_table(table)
+            results = []
+
+            for rule in rules:
+                # Validate rule doesn't contain dangerous operations
+                if any(dangerous in rule.upper() for dangerous in ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE']):
+                    results.append({
+                        "rule": rule,
+                        "status": "SKIPPED",
+                        "reason": "Rule contains dangerous SQL operations"
+                    })
+                    continue
+
+                try:
+                    # Find violations (rows where rule is FALSE)
+                    violation_query = f"SELECT * FROM {table} WHERE NOT ({rule}) LIMIT 10"
+                    violations_df = self.connector.execute(violation_query)
+
+                    total_count_query = f"SELECT COUNT(*) as total FROM {table} WHERE NOT ({rule})"
+                    total_violations = self.connector.execute(total_count_query)
+
+                    violation_count = int(total_violations.iloc[0]['total']) if not total_violations.empty else 0
+
+                    results.append({
+                        "rule": rule,
+                        "status": "PASS" if violation_count == 0 else "FAIL",
+                        "violation_count": violation_count,
+                        "violations_sample": violations_df.head(5).to_dict(orient='records') if not violations_df.empty else []
+                    })
+
+                except Exception as e:
+                    results.append({
+                        "rule": rule,
+                        "status": "ERROR",
+                        "error": str(e)
+                    })
+
+            return {
+                "table": table,
+                "validations": results,
+                "summary": {
+                    "total_rules": len(results),
+                    "passed": sum(1 for r in results if r.get("status") == "PASS"),
+                    "failed": sum(1 for r in results if r.get("status") == "FAIL"),
+                    "errors": sum(1 for r in results if r.get("status") == "ERROR")
+                }
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    def analyze_data_quality(self, table: str) -> Dict[str, Any]:
+        """
+        📊 Comprehensive data quality analysis.
+
+        Args:
+            table: Table to analyze
+
+        Returns:
+            Dict with data quality metrics and recommendations
+        """
+        validate_identifier(table, 'table')
+
+        try:
+            table_info = self.describe_table(table)
+            columns = [col['column_name'] for col in table_info]
+
+            # Get row count
+            row_count = self.get_row_count(table)
+
+            if row_count == 0:
+                return {
+                    "table": table,
+                    "row_count": 0,
+                    "status": "EMPTY",
+                    "message": "Table is empty, cannot analyze data quality"
+                }
+
+            # Analyze each column
+            column_stats = {}
+            null_analysis = {}
+            type_issues = []
+
+            for col_info in table_info:
+                col_name = col_info['column_name']
+                col_type = col_info['column_type'].upper()
+
+                # Count nulls
+                null_query = f"SELECT COUNT(*) as null_count FROM {table} WHERE {col_name} IS NULL"
+                null_result = self.connector.execute(null_query)
+                null_count = int(null_result.iloc[0]['null_count']) if not null_result.empty else 0
+                null_pct = (null_count / row_count * 100) if row_count > 0 else 0
+
+                null_analysis[col_name] = {
+                    "null_count": null_count,
+                    "null_percentage": round(null_pct, 2),
+                    "status": "OK" if null_pct < 5 else "WARNING" if null_pct < 50 else "CRITICAL"
+                }
+
+                # Check for type issues (string dates, etc.)
+                if col_type == 'VARCHAR':
+                    # Check if it looks like a date
+                    if 'date' in col_name.lower():
+                        type_issues.append({
+                            "column": col_name,
+                            "issue": f"Column '{col_name}' is VARCHAR but contains date values",
+                            "recommendation": "Consider converting to DATE type for better validation and query performance"
+                        })
+
+                # For numeric columns, check for outliers
+                if col_type in ['INTEGER', 'BIGINT', 'DOUBLE', 'FLOAT', 'DECIMAL', 'NUMERIC']:
+                    try:
+                        stats_query = f"""
+                            SELECT 
+                                MIN({col_name}) as min_val,
+                                MAX({col_name}) as max_val,
+                                AVG({col_name}) as avg_val,
+                                COUNT(DISTINCT {col_name}) as distinct_count
+                            FROM {table}
+                            WHERE {col_name} IS NOT NULL
+                        """
+                        stats = self.connector.execute(stats_query)
+                        if not stats.empty and stats.iloc[0]['min_val'] is not None:
+                            column_stats[col_name] = {
+                                "min": float(stats.iloc[0]['min_val']),
+                                "max": float(stats.iloc[0]['max_val']),
+                                "avg": float(stats.iloc[0]['avg_val']),
+                                "distinct_values": int(stats.iloc[0]['distinct_count'])
+                            }
+                    except:
+                        pass
+
+            # Check for potential duplicates
+            duplicate_check = self.detect_duplicates(table, None)
+            has_duplicates = duplicate_check.get("has_duplicates", False)
+
+            # Generate recommendations
+            recommendations = []
+            if has_duplicates:
+                recommendations.append("Duplicate rows detected. Review duplicate detection results.")
+            
+            for issue in type_issues:
+                recommendations.append(issue["recommendation"])
+
+            high_null_cols = [col for col, stats in null_analysis.items() if stats["status"] == "CRITICAL"]
+            if high_null_cols:
+                recommendations.append(f"Columns with >50% nulls: {', '.join(high_null_cols)}. Consider data validation or default values.")
+
+            return {
+                "table": table,
+                "row_count": row_count,
+                "columns_analyzed": len(columns),
+                "null_analysis": null_analysis,
+                "numeric_statistics": column_stats,
+                "type_issues": type_issues,
+                "duplicates_detected": has_duplicates,
+                "recommendations": recommendations,
+                "quality_score": self._calculate_quality_score(null_analysis, has_duplicates, type_issues)
+            }
+
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _explain_duplicates(self, table: str, columns: List[str], duplicate_groups: List[Dict], total_duplicate_rows: int) -> str:
+        """Generate explanation for why duplicates exist."""
+        explanation = f"Found {len(duplicate_groups)} duplicate group(s) with {total_duplicate_rows} total duplicate rows in {table}.\n\n"
+        
+        if len(duplicate_groups) <= 3:
+            explanation += "Duplicate groups:\n"
+            for group in duplicate_groups:
+                # Make a copy to avoid mutating the original
+                group_copy = dict(group)
+                dup_count = group_copy.pop('duplicate_count', 'N/A')
+                key_values = ', '.join([f"{k}={v}" for k, v in group_copy.items()])
+                explanation += f"- {key_values} appears {dup_count} times\n"
+        
+        explanation += f"\nPossible reasons:\n"
+        explanation += "- Missing DISTINCT in source SQL transformation\n"
+        explanation += "- JOIN conditions creating cartesian products\n"
+        explanation += "- Data entry errors (true duplicates)\n"
+        explanation += "- Missing unique constraints\n"
+        
+        # Check if this is a fact table that might legitimately have duplicates
+        if 'fact' in table.lower():
+            explanation += "- Note: Fact tables may legitimately have multiple rows for the same dimensions (e.g., multiple transactions)\n"
+        
+        return explanation
+
+    def _suggest_duplicate_fix(self, table: str, columns: List[str]) -> str:
+        """Suggest how to fix duplicates."""
+        suggestion = f"To fix duplicates in {table}:\n"
+        suggestion += f"1. Review the SQL that creates {table} - add DISTINCT if duplicates shouldn't exist\n"
+        suggestion += f"2. Check JOIN conditions - ensure proper keys are used\n"
+        
+        if len(columns) <= 3:
+            suggestion += f"3. Consider adding a UNIQUE constraint on ({', '.join(columns)}) if these columns should uniquely identify rows\n"
+        else:
+            suggestion += f"3. Consider adding a UNIQUE constraint on key columns if duplicates are invalid\n"
+        
+        suggestion += f"4. Use ROW_NUMBER() with PARTITION BY to deduplicate if needed\n"
+        
+        return suggestion
+
+    def _auto_detect_rules(self, table: str) -> List[str]:
+        """Auto-detect common business rules based on column names and types."""
+        table_info = self.describe_table(table)
+        rules = []
+
+        for col_info in table_info:
+            col_name = col_info['column_name']
+            col_type = col_info['column_type'].upper()
+            col_lower = col_name.lower()
+
+            # Date rules
+            if 'start_date' in col_lower and 'end_date' in [c['column_name'].lower() for c in table_info]:
+                end_col = next((c['column_name'] for c in table_info if 'end_date' in c['column_name'].lower()), None)
+                if end_col:
+                    rules.append(f"{end_col} >= {col_name} OR {end_col} IS NULL")
+                    rules.append(f"{col_name} IS NOT NULL")
+
+            # Positive number rules
+            if col_type in ['INTEGER', 'BIGINT', 'DOUBLE', 'FLOAT', 'DECIMAL', 'NUMERIC']:
+                if any(keyword in col_lower for keyword in ['salary', 'price', 'amount', 'cost', 'revenue', 'quantity']):
+                    rules.append(f"{col_name} >= 0")
+                if 'id' in col_lower:
+                    rules.append(f"{col_name} > 0")
+
+            # Not null rules for key columns
+            if 'id' in col_lower or col_name.endswith('_id'):
+                rules.append(f"{col_name} IS NOT NULL")
+
+            # Enum/string validation
+            if 'status' in col_lower or 'state' in col_lower or 'level' in col_lower or 'type' in col_lower:
+                # Don't auto-generate rules for these, would need to know valid values
+                pass
+
+        return list(set(rules))  # Remove duplicates
+
+    def _calculate_quality_score(self, null_analysis: Dict, has_duplicates: bool, type_issues: List) -> Dict[str, Any]:
+        """Calculate overall data quality score."""
+        score = 100
+        issues = []
+
+        # Deduct for nulls
+        critical_nulls = sum(1 for stats in null_analysis.values() if stats["status"] == "CRITICAL")
+        warning_nulls = sum(1 for stats in null_analysis.values() if stats["status"] == "WARNING")
+        
+        score -= critical_nulls * 20
+        score -= warning_nulls * 5
+
+        # Deduct for duplicates
+        if has_duplicates:
+            score -= 15
+            issues.append("Duplicates detected")
+
+        # Deduct for type issues
+        score -= len(type_issues) * 5
+
+        score = max(0, score)  # Don't go below 0
+
+        quality_level = "EXCELLENT" if score >= 90 else "GOOD" if score >= 70 else "FAIR" if score >= 50 else "POOR"
+
+        return {
+            "score": score,
+            "level": quality_level,
+            "issues_count": critical_nulls + warning_nulls + (1 if has_duplicates else 0) + len(type_issues)
+        }
+
     def clear_cache(self):
         """Clear cached lineage results."""
         self.trace_column_lineage.cache_clear()

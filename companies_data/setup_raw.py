@@ -4,6 +4,7 @@ import os
 # Define path: The database resides in the current directory (companies_data)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(CURRENT_DIR, "corporate.duckdb")
+SQL_FILE = os.path.join(CURRENT_DIR, "etl", "01_corporate_logic.sql")
 
 
 def create_raw_layer():
@@ -51,9 +52,32 @@ def create_raw_layer():
     ) AS t(job_id, emp_id, company_id, role, salary, start_date, end_date, is_current);
     """)
 
-    print("✅ Database created successfully.")
+    print("✅ RAW layer created successfully.")
+    con.close()
+
+
+def run_etl_sql():
+    """Run SQL file to create silver and conformed layers"""
+    if not os.path.exists(SQL_FILE):
+        print(f"⚠️ SQL file not found: {SQL_FILE}")
+        return
+    
+    con = duckdb.connect(DB_PATH)
+    
+    print(f"🔄 Running ETL from: {SQL_FILE}")
+    
+    # Read and execute SQL file
+    with open(SQL_FILE, 'r', encoding='utf-8') as f:
+        sql_content = f.read()
+    
+    # Execute the SQL (DuckDB can handle multiple statements)
+    con.execute(sql_content)
+    
+    print("✅ Silver and Conformed layers created successfully.")
     con.close()
 
 
 if __name__ == "__main__":
     create_raw_layer()
+    run_etl_sql()
+    print("\n🎉 Complete! All layers (raw, silver, conformed) are ready.")

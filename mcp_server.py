@@ -23,6 +23,17 @@ import os
 import sys
 from typing import Optional, List, Any
 
+# Fix Windows console encoding for Unicode characters
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        # Python < 3.7 or reconfigure failed, use environment variable
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # Add project root and scripts folder to path
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, 'scripts')
@@ -36,7 +47,7 @@ from debug_engine import DebugEngine, validate_identifier
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    print("❌ MCP library not installed!")
+    print("[ERROR] MCP library not installed!")
     print("   Install with: pip install mcp")
     sys.exit(1)
 
@@ -352,6 +363,126 @@ def run_query(sql: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# DATA QUALITY & BUSINESS LOGIC VALIDATION TOOLS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@mcp.tool()
+def detect_duplicates(table: str, columns: Optional[str] = None) -> dict:
+    """
+    🔍 Detect duplicate rows in a table.
+
+    Automatically finds duplicate records and explains why they might exist.
+
+    Args:
+        table: Table to check (e.g., "silver.fact_jobs")
+        columns: Optional comma-separated list of columns to check.
+                If not provided, checks all columns for exact duplicates.
+                Example: "emp_id,company_id"
+
+    Returns:
+        Duplicate detection results with explanation and recommendations.
+
+    Example:
+        detect_duplicates("silver.fact_jobs")
+        → Shows all duplicate rows and explains why they exist
+
+        detect_duplicates("silver.fact_jobs", "emp_id,company_id")
+        → Checks for duplicates based on employee and company combination
+    """
+    try:
+        validate_identifier(table, 'table')
+        
+        columns_list = None
+        if columns:
+            # Parse comma-separated columns
+            columns_list = [col.strip() for col in columns.split(',')]
+            for col in columns_list:
+                validate_identifier(col.strip(), 'column')
+        
+        return get_engine().detect_duplicates(table, columns_list)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def validate_business_rules(table: str, rules: Optional[str] = None) -> dict:
+    """
+    ✅ Validate data against business rules.
+
+    Checks if data follows expected business logic (e.g., dates are valid, 
+    numbers are positive, required fields are not null).
+
+    Args:
+        table: Table to validate (e.g., "silver.fact_jobs")
+        rules: Optional comma-separated list of SQL WHERE clause conditions.
+              If not provided, auto-detects common rules based on column names.
+              Example: "salary > 0", "end_date >= start_date"
+
+    Returns:
+        Validation results for each rule with violation counts and examples.
+
+    Example:
+        validate_business_rules("silver.fact_jobs")
+        → Auto-detects and validates common rules (positive salaries, valid dates, etc.)
+
+        validate_business_rules("silver.fact_jobs", "salary > 0, end_date >= start_date")
+        → Validates specific rules you provide
+    """
+    try:
+        validate_identifier(table, 'table')
+        
+        rules_list = None
+        if rules:
+            # Parse comma-separated rules (more complex - handle with care)
+            rules_list = [rule.strip() for rule in rules.split(',')]
+        
+        return get_engine().validate_business_rules(table, rules_list)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def analyze_data_quality(table: str) -> dict:
+    """
+    📊 Comprehensive data quality analysis.
+
+    Analyzes a table for common data quality issues:
+    - Null values and their percentages
+    - Outliers in numeric columns
+    - Data type issues (e.g., dates stored as strings)
+    - Duplicate detection
+    - Overall quality score
+
+    Args:
+        table: Table to analyze (e.g., "conformed.company_stats")
+
+    Returns:
+        Comprehensive data quality report with metrics and recommendations.
+
+    Example:
+        analyze_data_quality("silver.fact_jobs")
+        → {
+            "row_count": 8,
+            "null_analysis": {...},
+            "numeric_statistics": {...},
+            "quality_score": {"score": 85, "level": "GOOD"},
+            "recommendations": [...]
+          }
+    """
+    try:
+        validate_identifier(table, 'table')
+        return get_engine().analyze_data_quality(table)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MAIN ENTRY POINT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -381,6 +512,11 @@ if __name__ == "__main__":
     print('     • check_table_health - Debug data quality')
     print('     • inspect_row        - Look at specific data')
     print('     • run_query          - Custom SQL (read-only)')
+    print()
+    print('   Data Quality & Validation:')
+    print('     • detect_duplicates  - Find duplicate rows')
+    print('     • validate_business_rules - Check business logic')
+    print('     • analyze_data_quality - Comprehensive quality analysis')
     print()
     print('🚀 Starting server...')
     print('=' * 60)
