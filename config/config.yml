@@ -18,6 +18,6 @@ duckdb:
 # ============================================
 databricks:
   host: "dbc-d24f74a5-540f.cloud.databricks.com"
-  token: "dapi71b894d20a6df59f7a8108e94b1f90ef"
+  token: ""
   http_path: "/sql/1.0/warehouses/94d71780fb361a26"
   catalog: "companies_data"
