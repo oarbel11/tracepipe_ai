@@ -86,3 +86,6 @@ logs/
 htmlcov/
 .tox/
 .nox/
+*.duckdb
+.venv/
+__pycache__/

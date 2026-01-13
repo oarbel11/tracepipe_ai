@@ -1,0 +1,23 @@
+# ============================================
+# Debug AI - Database Configuration
+# ============================================
+# Set your database connection details here.
+# Choose ONE database type and fill in the details.
+
+# Database type: "duckdb" or "databricks"
+db_type: "databricks"
+
+# ============================================
+# DuckDB Configuration (local database)
+# ============================================
+duckdb:
+  path: "companies_data/corporate.duckdb"
+
+# ============================================
+# Databricks Configuration
+# ============================================
+databricks:
+  host: "dbc-d24f74a5-540f.cloud.databricks.com"
+  token: ""
+  http_path: "/sql/1.0/warehouses/94d71780fb361a26"
+  catalog: "companies_data"

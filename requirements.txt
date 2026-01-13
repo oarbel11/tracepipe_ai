@@ -1,4 +1,4 @@
 duckdb
 pandas
 mcp
-
+databricks-sql-connector
