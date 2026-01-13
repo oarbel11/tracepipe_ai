@@ -8,6 +8,58 @@
 db_type: "databricks"
 
 # ============================================
+# Lineage Source Configuration
+# ============================================
+# Choose how lineage is tracked. Three main options:
+#
+# OPTION 1: "databricks" - Use Databricks Unity Catalog (RECOMMENDED)
+#   Unity Catalog automatically tracks lineage from ALL queries:
+#   - Interactive SQL queries in notebooks
+#   - SQL Editor queries
+#   - Spark jobs (scheduled or ad-hoc)
+#   - CREATE TABLE AS SELECT statements
+#   - Any INSERT/MERGE that ran at least once
+#   NO local files or formal jobs needed!
+#
+# OPTION 2: "local" - Parse local SQL/Spark files
+#   - Use when you have transformation files on your machine
+#   - Configure sql_dir, jobs_dir, or notebooks_dir below
+#
+# OPTION 3: "auto" - Automatically choose based on what exists
+#   - Uses local if files exist, otherwise databricks
+
+lineage_source: "databricks"
+
+# ============================================
+# Databricks Workspace Paths (optional - for documentation)
+# ============================================
+# List where your ETL code lives in Databricks.
+# This is OPTIONAL - just for documentation purposes.
+# Unity Catalog tracks lineage automatically from ANY query that runs.
+
+databricks_jobs:
+  # Example (supports multiple entries):
+  # - workspace_path: "/Repos/data-team/etl-pipelines"
+  #   description: "Main ETL jobs"
+  # - workspace_path: "/Repos/data-team/silver-layer"
+  #   description: "Silver transformations"
+
+# ============================================
+# Local Files (when you have files on your machine)
+# ============================================
+# ALL PATHS ARE OPTIONAL - configure only what you have.
+# Leave empty ("") if your jobs are only in Databricks.
+
+# SQL files directory (CREATE TABLE ... AS SELECT statements)
+sql_dir: ""
+
+# Spark/PySpark jobs directory (Python files with ETL logic)
+jobs_dir: ""
+
+# Exported Databricks notebooks (if you exported them locally)
+notebooks_dir: ""
+
+# ============================================
 # DuckDB Configuration (local database)
 # ============================================
 duckdb:
@@ -18,6 +70,6 @@ duckdb:
 # ============================================
 databricks:
   host: "dbc-d24f74a5-540f.cloud.databricks.com"
-  token: ""
+  token: "dapi71b894d20a6df59f7a8108e94b1f90ef"
   http_path: "/sql/1.0/warehouses/94d71780fb361a26"
   catalog: "companies_data"

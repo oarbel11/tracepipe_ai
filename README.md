@@ -171,37 +171,80 @@ Schemas found: ['raw', 'silver', 'gold']
 
 ---
 
-### STEP 3: Build the Metadata (1 minute)
+### STEP 3: Configure Lineage Source
 
-This step reads your SQL files and creates a "map" of how columns are calculated.
+Choose how you want lineage metadata to be collected:
 
-```powershell
-python scripts/cli.py build
+#### Option A: Local SQL Files (Default for DuckDB)
+
+If you have your SQL/ETL files locally, parse them to build lineage metadata:
+
+1. **Set in `config/config.yml`:**
+   ```yaml
+   lineage_source: "local"
+   etl_dir: "path/to/your/sql/files"
+   ```
+
+2. **Run the build:**
+   ```powershell
+   python scripts/cli.py build
+   ```
+
+   You should see:
+   ```
+   📄 Parsing: 01_raw_to_silver.sql
+     ✅ Found: silver.customers
+        └─ Sources: raw.customers
+     ✅ Found: silver.orders
+        └─ Sources: raw.orders, raw.products
+        └─ Computed: total_amount
+
+   ✨ BUILD COMPLETE!
+      📊 Tables: 5
+      🔗 Table lineage: 8
+      📝 Column lineage: 3
+   ```
+
+#### Option B: Databricks Unity Catalog (Automatic Lineage) ☁️
+
+If you're using Databricks with Unity Catalog, lineage is tracked **automatically**!
+
+1. **Set in `config/config.yml`:**
+   ```yaml
+   db_type: "databricks"
+   lineage_source: "databricks"
+   ```
+
+2. **No build step needed!** Unity Catalog tracks lineage automatically when:
+   - Tables are created/updated via SQL or Spark
+   - Jobs run on your cluster
+
+3. **Test it:**
+   ```python
+   from scripts.debug_engine import DebugEngine
+   engine = DebugEngine()
+   
+   # Get tables that feed into a target table
+   sources = engine.get_upstream_tables('silver.customers')
+   print(sources)
+   ```
+
+**Note:** Unity Catalog lineage requires:
+- Unity Catalog enabled on your workspace
+- Tables registered in a Unity Catalog
+- Access to `system.access.table_lineage` and `system.access.column_lineage`
+
+#### Option C: Auto-Detect
+
+Let the system choose automatically:
+
+```yaml
+lineage_source: "auto"
+etl_dir: "etl"  # Will use local if SQL files exist here
 ```
 
-You should see:
-```
-📄 Parsing: 01_raw_to_silver.sql
-  ✅ Found: silver.customers
-     └─ Sources: raw.customers
-  ✅ Found: silver.orders
-     └─ Sources: raw.orders, raw.products
-     └─ Computed: total_amount
-
-📄 Parsing: 02_silver_to_gold.sql
-  ✅ Found: gold.revenue_report
-     └─ Sources: silver.orders
-     └─ Aggregation: monthly_revenue
-
-✨ BUILD COMPLETE!
-   📊 Tables: 5
-   🔗 Table lineage: 8
-   📝 Column lineage: 3
-```
-
-**⚠️ If you see "0 tables" or errors:**
-- Check your SQL files have `CREATE TABLE` statements
-- Make sure the SQL folder path is correct
+- If `etl_dir` has `.sql` files → uses **local** parsing
+- If no SQL files but db_type is `databricks` → uses **Unity Catalog**
 
 ---
 
