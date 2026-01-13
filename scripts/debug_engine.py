@@ -164,6 +164,79 @@ class DuckDBConnector(DatabaseConnector):
         return df.to_dict(orient='records')
 
 
+class DatabricksConnector(DatabaseConnector):
+    """Databricks implementation of DatabaseConnector."""
+
+    def __init__(self, config: Dict[str, str]):
+        self.host = config['host']
+        self.token = config['token']
+        self.http_path = config['http_path']
+        self.catalog = config.get('catalog', 'hive_metastore')
+        self._connection = None
+        self._cursor = None
+
+    def _get_connection(self):
+        """Get or create a persistent connection."""
+        if self._connection is None:
+            from databricks import sql
+            self._connection = sql.connect(
+                server_hostname=self.host,
+                http_path=self.http_path,
+                access_token=self.token,
+                catalog=self.catalog
+            )
+            self._cursor = self._connection.cursor()
+        return self._connection, self._cursor
+
+    def execute(self, query: str, params: Optional[List] = None) -> pd.DataFrame:
+        """Execute query and return DataFrame."""
+        _, cursor = self._get_connection()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        result = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description] if cursor.description else []
+        return pd.DataFrame(result, columns=columns)
+
+    def get_schemas(self) -> List[str]:
+        """Get all schemas in the current catalog."""
+        query = f"""
+            SELECT DISTINCT schema_name
+            FROM {self.catalog}.information_schema.schemata
+            WHERE schema_name NOT IN ('information_schema', '__databricks_internal')
+            ORDER BY schema_name
+        """
+        df = self.execute(query)
+        return df['schema_name'].tolist()
+
+    def get_tables(self, schema: Optional[str] = None) -> List[Dict[str, str]]:
+        """Get tables, optionally filtered by schema."""
+        if schema:
+            query = f"""
+                SELECT table_schema, table_name
+                FROM {self.catalog}.information_schema.tables
+                WHERE table_schema = '{schema}'
+                ORDER BY table_name
+            """
+        else:
+            query = f"""
+                SELECT table_schema, table_name
+                FROM {self.catalog}.information_schema.tables
+                WHERE table_schema NOT IN ('information_schema', '__databricks_internal')
+                ORDER BY table_schema, table_name
+            """
+        df = self.execute(query)
+        return df.to_dict(orient='records')
+
+    def close(self):
+        """Close connection."""
+        if self._cursor:
+            self._cursor.close()
+        if self._connection:
+            self._connection.close()
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MAIN CLASS: Debug Engine
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -201,7 +274,7 @@ class DebugEngine:
     def __init__(
         self,
         db_path: Optional[str] = None,
-        db_type: str = 'duckdb',
+        db_type: Optional[str] = None,
         table_lineage_table: Optional[str] = None,
         column_lineage_table: Optional[str] = None
     ):
@@ -209,30 +282,38 @@ class DebugEngine:
         Initialize the Debug Engine.
 
         Args:
-            db_path: Path to database. If None, auto-detects from config.
-            db_type: Database type ('duckdb', 'databricks', 'snowflake')
+            db_path: Path to database (for duckdb). If None, reads from config.
+            db_type: Database type. If None, reads from config.yml
             table_lineage_table: Custom metadata table for table lineage
             column_lineage_table: Custom metadata table for column lineage
         """
-        # Auto-detect path if not provided
-        if db_path is None:
-            from config.db_config import get_db_path_safe
-            db_path = get_db_path_safe()
-
-        self.db_path = db_path
-        self.db_type = db_type
-
+        # Load from config if not provided
+        from config.db_config import get_db_type, get_duckdb_config, get_databricks_config
+        
+        self.db_type = db_type or get_db_type()
+        
         # Initialize connector based on type
-        if db_type == 'duckdb':
+        if self.db_type == 'duckdb':
+            if db_path is None:
+                config = get_duckdb_config()
+                db_path = config['path']
+            
+            self.db_path = db_path
             self.connector = DuckDBConnector(db_path)
+            logger.info(f"DebugEngine initialized: DuckDB at {db_path}")
+            
+        elif self.db_type == 'databricks':
+            config = get_databricks_config()
+            self.connector = DatabricksConnector(config)
+            self.db_path = f"databricks://{config['host']}"
+            logger.info(f"DebugEngine initialized: Databricks at {config['host']}")
+            
         else:
-            raise NotImplementedError(f"Database type '{db_type}' not yet supported")
+            raise NotImplementedError(f"Database type '{self.db_type}' not yet supported")
 
-        # Metadata table names (customizable!)
+        # Metadata table names
         self.table_lineage_table = table_lineage_table or self.DEFAULT_TABLE_LINEAGE
         self.column_lineage_table = column_lineage_table or self.DEFAULT_COLUMN_LINEAGE
-
-        logger.info(f"DebugEngine initialized: {db_path}")
 
     # ─────────────────────────────────────────────────────────────
     # DISCOVERY METHODS
