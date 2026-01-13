@@ -14,7 +14,7 @@ And get answers based on your **actual SQL transformations**!
 
 ## 📁 What You Need
 
-- ✅ A `.duckdb` database file
+- ✅ A database: `.duckdb` file **OR** Databricks workspace
 - ✅ SQL files with your transformations (`CREATE TABLE ... AS SELECT ...`)
 - ✅ Python 3.8+
 - ✅ Cursor or Claude Desktop
@@ -95,9 +95,11 @@ You should see a list of commands.
 
 ---
 
-### STEP 2: Configure Your Database (2 minutes)
+### STEP 2: Configure Your Database (2-5 minutes)
 
-#### 2.1 Initialize with YOUR Paths
+Choose your database type:
+
+#### Option A: DuckDB (Local Database)
 
 You need TWO paths:
 - **Database path** - where your `.duckdb` file is
@@ -117,6 +119,54 @@ You should see:
 ✅ Database: D:\DataLake\warehouse.duckdb
 ✅ SQL Directory: D:\DataLake\etl\transformations (15 files)
 ✅ Configuration saved
+```
+
+#### Option B: Databricks (Cloud Data Platform) ☁️
+
+**Step 2B.1: Install Databricks connector**
+```powershell
+pip install databricks-sql-connector
+```
+
+**Step 2B.2: Edit `config/config.yml`**
+
+```yaml
+# Set database type to databricks
+db_type: "databricks"
+
+# Databricks Configuration  
+databricks:
+  host: "your-workspace.cloud.databricks.com"    # Without https://
+  token: "dapi..."                                # Your Personal Access Token
+  http_path: "/sql/1.0/warehouses/abc123"         # From SQL Warehouse connection details
+  catalog: "your_catalog"                         # e.g., main, hive_metastore, etc.
+```
+
+**Where to find your credentials:**
+| Setting | Location in Databricks |
+|---------|------------------------|
+| `host` | Your workspace URL (e.g., `dbc-xxxxx.cloud.databricks.com`) |
+| `token` | **User Settings → Developer → Access Tokens → Generate New Token** |
+| `http_path` | **SQL Warehouses → [Your Warehouse] → Connection Details** |
+| `catalog` | **Data → Catalog** (Unity Catalog name) |
+
+**Step 2B.3: Test the connection**
+```powershell
+python config/db_config.py
+```
+
+Expected output:
+```
+Database Configuration
+==================================================
+Database Type: databricks
+Host: your-workspace.cloud.databricks.com
+Catalog: your_catalog
+HTTP Path: /sql/1.0/warehouses/xxx
+Token: ***xxxx
+
+✅ Configuration loaded successfully
+Schemas found: ['raw', 'silver', 'gold']
 ```
 
 ---
@@ -356,18 +406,58 @@ $env:DEBUG_AI_DB_PATH = "C:\Data\warehouse.duckdb"
 $env:DEBUG_AI_DB_TYPE = "duckdb"  # Optional, this is the default
 ```
 
-#### Databricks
+#### Databricks ✅ (Fully Supported)
 
-Set these environment variables:
+Databricks is now fully integrated! Configure it in `config/config.yml`:
 
-```powershell
-$env:DEBUG_AI_DB_TYPE = "databricks"
-$env:DATABRICKS_HOST = "your-workspace.cloud.databricks.com"
-$env:DATABRICKS_TOKEN = "your-personal-access-token"
-$env:DATABRICKS_WAREHOUSE_ID = "your-warehouse-id"
+**Step 1: Edit `config/config.yml`**
+
+```yaml
+# Set database type to databricks
+db_type: "databricks"
+
+# Databricks Configuration
+databricks:
+  host: "your-workspace.cloud.databricks.com"
+  token: "your-personal-access-token"
+  http_path: "/sql/1.0/warehouses/your-warehouse-id"
+  catalog: "your_catalog_name"
 ```
 
-**Note:** Databricks connector needs to be implemented in `scripts/debug_engine.py`. Currently, the structure supports it but requires implementation.
+**Step 2: Get Your Databricks Credentials**
+
+| Setting | Where to Find It |
+|---------|------------------|
+| `host` | Your Databricks workspace URL (without `https://`) |
+| `token` | **User Settings → Developer → Access Tokens → Generate New Token** |
+| `http_path` | **SQL Warehouses → Your Warehouse → Connection Details → HTTP Path** |
+| `catalog` | The Unity Catalog you want to query (e.g., `hive_metastore`, `main`, etc.) |
+
+**Step 3: Test the Connection**
+
+```powershell
+python config/db_config.py
+```
+
+Expected output:
+```
+Database Configuration
+==================================================
+Database Type: databricks
+Host: your-workspace.cloud.databricks.com
+Catalog: your_catalog
+HTTP Path: /sql/1.0/warehouses/your-warehouse-id
+Token: ***xxxx
+
+✅ Configuration loaded successfully
+Schemas found: ['schema1', 'schema2', 'schema3']
+```
+
+**Step 4: Install Databricks Connector (if not already installed)**
+
+```powershell
+pip install databricks-sql-connector
+```
 
 #### Snowflake
 
