@@ -7,7 +7,7 @@ CREATE OR REPLACE TABLE silver.dim_companies AS
 SELECT company_id, UPPER(name) as name, location, industry FROM raw.companies;
 
 CREATE OR REPLACE TABLE silver.dim_employees AS
-SELECT emp_id, full_name FROM raw.employees;
+SELECT emp_id, full_name, gender FROM raw.employees;
 
 CREATE OR REPLACE TABLE silver.fact_jobs AS
 SELECT
@@ -19,7 +19,7 @@ JOIN raw.companies c ON j.company_id = c.company_id;
 
 -- 1. KPI לחברות
 CREATE OR REPLACE TABLE conformed.company_stats AS
-SELECT company_name, AVG(salary) as avg_salary, COUNT(*) as workers
+SELECT company_name, sum(salary) as avg_salary, COUNT(*) as workers
 FROM silver.fact_jobs GROUP BY company_name;
 
 -- 2. סיכום קריירה לעובד
@@ -45,21 +45,4 @@ SELECT
         ELSE 'LOW'
     END AS risk_level
 FROM conformed.career_summary cs
-JOIN silver.dim_employees e ON cs.emp_id = e.emp_id
-;  -- 🔴 BUSINESS LOGIC CHANGE: WHERE clause removed to include ALL employees!
-
--- === NEW ANALYSIS TABLE (Uses new raw tables) ===
-
--- 5. Total Compensation Analysis
-CREATE OR REPLACE TABLE conformed.total_compensation AS
-SELECT
-    e.full_name,
-    cs.company_name,
-    d.dept_name,
-    cs.avg_salary,
-    COALESCE(b.annual_value, 0) as benefits_value,
-    cs.avg_salary + COALESCE(b.annual_value, 0) as total_comp
-FROM conformed.company_stats cs
-JOIN silver.dim_employees e ON 1=1  -- Will join properly later
-LEFT JOIN raw.departments d ON d.company_id = (SELECT company_id FROM raw.companies WHERE name = cs.company_name LIMIT 1)
-LEFT JOIN raw.benefits b ON b.emp_id = e.emp_id;
+JOIN silver.dim_employees e ON cs.emp_id = e.emp_id;
