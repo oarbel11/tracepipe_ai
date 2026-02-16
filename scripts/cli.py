@@ -447,36 +447,13 @@ def cmd_test(args):
 
 def cmd_peer_review(args):
     """Run senior peer review on code changes."""
-    print()
-    print("=" * 70)
-    print("🎓 SENIOR PEER REVIEW")
-    print("=" * 70)
-    print()
-    
     from scripts.peer_review.peer_review import PeerReviewOrchestrator
     
-    # Optional: Check for LLM enhancement
-    gemini_key = os.getenv('GEMINI_API_KEY')
-    if gemini_key:
-        print("✨ LLM enhancement enabled")
-        print()
+    orchestrator = PeerReviewOrchestrator(repo_path=args.repo)
     
-    # Initialize orchestrator
-    orchestrator = PeerReviewOrchestrator(
-        repo_path=args.repo,
-        gemini_api_key=gemini_key
-    )
-    
-    # Run review
     try:
-        if args.file:
-            # Review specific file (not implemented yet)
-            print(f"Reviewing specific file: {args.file}")
-            print("Note: File-specific review coming soon. Using full review instead.")
-        
         advisory = orchestrator.review_changes(staged_only=args.staged_only)
         
-        # Print formatted output
         print(advisory.formatted_output)
         
         # Save to file if requested
@@ -677,10 +654,8 @@ Examples:
     # peer-review check
     pr_check = pr_subparsers.add_parser('check', help='Review staged/modified files')
     pr_check.add_argument('--staged-only', action='store_true', default=False, help='Only review git-staged files (default: review ALL modified files)')
-    pr_check.add_argument('--file', help='Review specific file')
     pr_check.add_argument('--output', '-o', help='Save detailed report to JSON file')
     pr_check.add_argument('--block', action='store_true', help='Exit with error on RED risk (for git hooks)')
-    pr_check.add_argument('--skip-business', action='store_true', help='Skip business validation (faster)')
     pr_check.add_argument('--repo', help='Path to git repository (default: current dir)')
     
     # peer-review install-hook
@@ -692,7 +667,6 @@ Examples:
     
     # peer-review config
     pr_config = pr_subparsers.add_parser('config', help='Configure peer review settings')
-    pr_config.add_argument('--set-api-key', help='Set GEMINI_API_KEY (shows command)')
 
     args = parser.parse_args()
 

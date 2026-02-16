@@ -14,9 +14,10 @@ USAGE:
     print(advisory.formatted_output)
 """
 
+import re
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Set, Tuple
 from dataclasses import dataclass, asdict
 import logging
 
@@ -24,14 +25,13 @@ import logging
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.peer_review.semantic_delta import SemanticDeltaExtractor
+from scripts.peer_review.semantic_delta import SemanticDeltaExtractor, SQLPatternMatcher
 from scripts.peer_review.blast_radius import BlastRadiusMapper
 from scripts.peer_review.technical_validator import TechnicalValidator
-from scripts.peer_review.business_validator import BusinessValidator
 from scripts.debug_engine import DebugEngine
-from config.db_config import load_config
 
-logging.basicConfig(level=logging.INFO)
+# Suppress verbose logging — only show our clean output
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +72,9 @@ class PeerReviewOrchestrator:
     """
     Main orchestrator for the Senior Peer Review system.
     
-    Coordinates all validation components and generates final advisory.
+    Focused on two core checks:
+    1. SQL syntax errors (typos, unmatched parens)
+    2. Impact chain (which tables changed → which downstream tables are affected)
     """
     
     def __init__(
@@ -80,14 +82,7 @@ class PeerReviewOrchestrator:
         repo_path: Optional[str] = None,
         gemini_api_key: Optional[str] = None
     ):
-        """
-        Initialize orchestrator.
-        
-        Args:
-            repo_path: Path to git repository
-            gemini_api_key: Gemini API key for business validation
-        """
-        # Initialize debug engine
+        # Initialize debug engine (for lineage lookups)
         try:
             self.debug_engine = DebugEngine()
         except Exception as e:
@@ -98,127 +93,289 @@ class PeerReviewOrchestrator:
         self.delta_extractor = SemanticDeltaExtractor(repo_path)
         self.blast_mapper = BlastRadiusMapper(self.debug_engine)
         self.technical_validator = TechnicalValidator(self.debug_engine)
-        self.business_validator = BusinessValidator(api_key=gemini_api_key)
-    
-    def review_changes(self, staged_only: bool = True) -> CommitAdvisory:
+
+    def review_changes(self, staged_only: bool = False) -> CommitAdvisory:
         """
-        Review staged changes and generate commit advisory.
+        Review code changes and generate commit advisory.
         
-        Args:
-            staged_only: Only review staged files (True) or all modified (False)
-        
-        Returns:
-            CommitAdvisory with complete analysis
+        Simplified flow:
+        1. Get changed SQL from git diff
+        2. Check syntax errors
+        3. Find which tables changed (per-block diff)
+        4. Trace downstream impact chain via lineage DB
+        5. Format clean output
         """
-        logger.info("="*70)
-        logger.info("STARTING SENIOR PEER REVIEW")
-        logger.info("="*70)
-        
-        # Suppress verbose logging during execution
-        import logging
-        logging.getLogger('databricks').setLevel(logging.ERROR)
-        logging.getLogger('scripts.peer_review').setLevel(logging.ERROR)
-        logging.getLogger('DebugEngine').setLevel(logging.ERROR)
-        
-        # Step 1: Extract semantic delta
+        # Suppress all noisy loggers
+        for name in ['databricks', 'scripts', 'DebugEngine', 'scripts.peer_review']:
+            logging.getLogger(name).setLevel(logging.ERROR)
+
+        # Step 1: Extract what changed from git
         delta = self.delta_extractor.extract_from_git(staged_only=staged_only)
         
-        # If no changes, return early
         if not delta.modified_elements:
             return self._create_no_changes_advisory()
         
-        # Step 2: Map blast radius
-        blast_radius = self.blast_mapper.map_impact(delta.modified_elements)
-        
-        # Extract impacted table names
-        impacted_tables = [node['table'] for node in blast_radius.impacted_nodes]
-        
-        # Step 3: Technical validation
-        
-        # Get old/new code from first changed file
+        # Get old/new code
         old_code, new_code = self._get_code_samples(delta)
         
-        technical_report = self.technical_validator.validate(
-            modified_elements=delta.modified_elements,
-            impacted_nodes=impacted_tables,
-            old_code=old_code,
-            new_code=new_code
+        # Step 2: Syntax check on the new code
+        syntax_errors = self.technical_validator._check_sql_syntax(new_code)
+        
+        # Step 3: Find which specific tables changed
+        # delta.modified_elements already contains table names thanks to block splitting
+        changed_tables = list(set(delta.modified_elements))
+        
+        # Build per-table change descriptions
+        table_descriptions = self._describe_table_changes(old_code, new_code)
+        
+        # Step 4: Trace downstream impact chain
+        impact_chains = {}  # {changed_table: [(downstream_table, distance), ...]}
+        for table in changed_tables:
+            chain = self._trace_full_chain(table)
+            if chain:
+                impact_chains[table] = chain
+        
+        # Step 5: Calculate risk level
+        risk_level = self._calculate_risk(syntax_errors, changed_tables, impact_chains)
+        advisory_msg = self._get_advisory_message(risk_level)
+        
+        # Step 6: Format output
+        formatted = self._format_output(
+            risk_level=risk_level,
+            advisory=advisory_msg,
+            files=list(delta.details.keys()),
+            syntax_errors=syntax_errors,
+            changed_tables=changed_tables,
+            table_descriptions=table_descriptions,
+            impact_chains=impact_chains
         )
         
-        # Step 4: Business validation
-        
-        business_report = self.business_validator.validate(
-            old_code=old_code,
-            new_code=new_code,
-            context={
-                'table': delta.modified_elements[0] if delta.modified_elements else 'Unknown',
-                'downstream': impacted_tables[:5],  # Top 5 impacted
-                'affected_metrics': self._extract_metrics(impacted_tables)
-            }
+        return CommitAdvisory(
+            risk_level=risk_level,
+            advisory=advisory_msg,
+            semantic_delta=delta.to_dict(),
+            blast_radius={'impact_chains': {k: v for k, v in impact_chains.items()}},
+            technical_report={'syntax_errors': syntax_errors},
+            business_report={},
+            files_changed=len(delta.details),
+            technical_blockers=len(syntax_errors),
+            business_impact_summary='',
+            formatted_output=formatted
         )
-        
-        # Step 5: Synthesize advisory
-        advisory = self._synthesize_advisory(
-            delta=delta,
-            blast_radius=blast_radius,
-            technical_report=technical_report,
-            business_report=business_report
-        )
-        
-        return advisory
-    
-    def _get_code_samples(self, delta) -> tuple:
-        """Extract old and new code samples from delta details."""
+
+    # ─── Helper methods ─────────────────────────────────────────────
+
+    def _get_code_samples(self, delta) -> Tuple[str, str]:
+        """Get combined old and new code from ALL files in the delta."""
         if not delta.details:
             return "", ""
         
-        # Get first file's details
-        first_file = list(delta.details.keys())[0]
+        all_old = []
+        all_new = []
         
-        # Read the actual current file content
-        try:
-            file_path = Path(first_file)
-            if file_path.exists():
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    new_code = f.read()
+        for filepath, details in delta.details.items():
+            # If the delta already stored old_code/new_code (from block splitting)
+            if isinstance(details, dict) and 'old_code' in details:
+                all_old.append(details.get('old_code', ''))
+                all_new.append(details.get('new_code', ''))
             else:
-                new_code = ""
-        except Exception as e:
-            logger.debug(f"Could not read file {first_file}: {e}")
-            new_code = ""
+                # Read new code from filesystem
+                try:
+                    fpath = Path(filepath)
+                    if fpath.exists():
+                        all_new.append(fpath.read_text(encoding='utf-8'))
+                except:
+                    pass
+                
+                # Read old code from git
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['git', 'show', f'HEAD:{filepath}'],
+                        capture_output=True, text=True, cwd='.'
+                    )
+                    if result.returncode == 0:
+                        all_old.append(result.stdout)
+                except:
+                    pass
         
-        # Try to get old version from git
-        try:
-            import subprocess
-            result = subprocess.run(
-                ['git', 'show', f'HEAD:{first_file}'],
-                capture_output=True,
-                text=True,
-                cwd=Path(first_file).parent if Path(first_file).parent.exists() else '.'
-            )
-            old_code = result.stdout if result.returncode == 0 else ""
-        except Exception as e:
-            logger.debug(f"Could not get old version from git: {e}")
-            old_code = ""
+        return '\n'.join(all_old), '\n'.join(all_new)
+
+    def _describe_table_changes(self, old_code: str, new_code: str) -> Dict[str, str]:
+        """Build short descriptions of what changed in each table block."""
+        descriptions = {}
         
-        return old_code, new_code
-    
-    def _extract_metrics(self, impacted_tables: list) -> list:
-        """Extract likely metric names from impacted tables."""
-        metrics = []
-        metric_keywords = ['revenue', 'sales', 'count', 'total', 'average', 'dashboard', 'report']
+        old_blocks = self._split_sql_into_blocks(old_code)
+        new_blocks = self._split_sql_into_blocks(new_code)
         
-        for table in impacted_tables:
-            table_lower = table.lower()
-            for keyword in metric_keywords:
-                if keyword in table_lower:
-                    metrics.append(table)
-                    break
+        all_tables = set(old_blocks.keys()) | set(new_blocks.keys())
         
-        return metrics[:3]  # Return top 3
-    
+        for table in all_tables:
+            old_block = old_blocks.get(table, "")
+            new_block = new_blocks.get(table, "")
+            
+            if old_block.strip() == new_block.strip():
+                continue
+            
+            if not old_block:
+                descriptions[table] = "NEW TABLE added"
+                continue
+            if not new_block:
+                descriptions[table] = "TABLE REMOVED"
+                continue
+            
+            # Detect specific changes
+            changes = []
+            
+            # Aggregation changes — detect swaps first (AVG→SUM etc)
+            agg_funcs = ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN']
+            old_aggs = set(f for f in agg_funcs if f + '(' in old_block.upper())
+            new_aggs = set(f for f in agg_funcs if f + '(' in new_block.upper())
+            removed_aggs = old_aggs - new_aggs
+            added_aggs = new_aggs - old_aggs
+            
+            # If one was removed and another added, it's a swap
+            if removed_aggs and added_aggs:
+                for old_f in sorted(removed_aggs):
+                    for new_f in sorted(added_aggs):
+                        changes.append(f"{old_f}() changed to {new_f}()")
+            elif removed_aggs:
+                for f in sorted(removed_aggs):
+                    changes.append(f"{f}() removed")
+            elif added_aggs:
+                for f in sorted(added_aggs):
+                    changes.append(f"{f}() added")
+            
+            # WHERE clause changes
+            old_where = 'WHERE' in old_block.upper()
+            new_where = 'WHERE' in new_block.upper()
+            if not old_where and new_where:
+                # Extract the WHERE condition
+                where_match = re.search(r'WHERE\s+(.+?)(?:GROUP|ORDER|LIMIT|;|\Z)', new_block, re.IGNORECASE | re.DOTALL)
+                condition = where_match.group(1).strip() if where_match else ""
+                changes.append(f"Added WHERE {condition}")
+            elif old_where and not new_where:
+                changes.append("WHERE clause removed")
+            elif old_where and new_where:
+                old_where_text = re.search(r'WHERE\s+(.+?)(?:GROUP|ORDER|LIMIT|;|\Z)', old_block, re.IGNORECASE | re.DOTALL)
+                new_where_text = re.search(r'WHERE\s+(.+?)(?:GROUP|ORDER|LIMIT|;|\Z)', new_block, re.IGNORECASE | re.DOTALL)
+                if old_where_text and new_where_text and old_where_text.group(1).strip() != new_where_text.group(1).strip():
+                    changes.append("WHERE clause modified")
+            
+            # JOIN changes
+            old_joins = len(re.findall(r'\bJOIN\b', old_block, re.IGNORECASE))
+            new_joins = len(re.findall(r'\bJOIN\b', new_block, re.IGNORECASE))
+            if new_joins > old_joins:
+                changes.append(f"Added {new_joins - old_joins} JOIN(s)")
+            elif new_joins < old_joins:
+                changes.append(f"Removed {old_joins - new_joins} JOIN(s)")
+            
+            # Column changes
+            old_cols = set(re.findall(r'\bAS\s+([a-zA-Z_]\w*)', old_block, re.IGNORECASE))
+            new_cols = set(re.findall(r'\bAS\s+([a-zA-Z_]\w*)', new_block, re.IGNORECASE))
+            added = new_cols - old_cols
+            removed = old_cols - new_cols
+            if added:
+                changes.append(f"Added column(s): {', '.join(added)}")
+            if removed:
+                changes.append(f"Removed column(s): {', '.join(removed)}")
+            
+            if changes:
+                descriptions[table] = "; ".join(changes)
+            else:
+                descriptions[table] = "Logic modified"
+        
+        return descriptions
+
+    @staticmethod
+    def _split_sql_into_blocks(sql: str) -> Dict[str, str]:
+        """Split a SQL file into per-table blocks keyed by table name."""
+        blocks = {}
+        if not sql:
+            return blocks
+        parts = re.split(r'(?=CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW)\s+)', sql, flags=re.IGNORECASE)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            table_match = SQLPatternMatcher.CREATE_TABLE.search(part)
+            if table_match:
+                blocks[table_match.group(1)] = part
+        return blocks
+
+    def _trace_full_chain(self, table: str) -> List[Tuple[str, int]]:
+        """Trace all downstream tables recursively with hop distance."""
+        if not self.debug_engine:
+            return []
+        
+        chain = []
+        visited = set()
+        queue = [(table, 0)]
+        
+        while queue:
+            current, distance = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            
+            if distance > 0:  # Don't include the source table itself
+                chain.append((current, distance))
+            
+            try:
+                downstream = self.debug_engine.get_downstream_tables(current)
+                for child in downstream:
+                    if child not in visited:
+                        queue.append((child, distance + 1))
+            except Exception:
+                pass
+        
+        return chain
+
+    def _calculate_risk(
+        self,
+        syntax_errors: List[str],
+        changed_tables: List[str],
+        impact_chains: Dict[str, List]
+    ) -> str:
+        """Calculate risk level based on findings."""
+        # RED: syntax errors
+        if syntax_errors:
+            return 'RED'
+        
+        # Count total downstream impact
+        total_downstream = sum(len(chain) for chain in impact_chains.values())
+        
+        # RED: 5+ downstream tables affected
+        if total_downstream >= 5:
+            return 'RED'
+        
+        # YELLOW: any downstream impact or 2+ tables changed
+        if total_downstream > 0 or len(changed_tables) >= 2:
+            return 'YELLOW'
+        
+        # GREEN: only 1 table changed, no downstream
+        return 'GREEN'
+
+    def _get_advisory_message(self, risk_level: str) -> str:
+        """Get advisory message based on risk level."""
+        return {
+            'GREEN': 'Safe to commit',
+            'YELLOW': 'Proceed with caution',
+            'RED': 'Manual review required'
+        }.get(risk_level, 'Unknown')
+
     def _create_no_changes_advisory(self) -> CommitAdvisory:
         """Create advisory when no changes detected."""
+        output = []
+        output.append("")
+        output.append("╔" + "="*68 + "╗")
+        output.append("║" + " "*20 + "SENIOR PEER REVIEW" + " "*30 + "║")
+        output.append("╚" + "="*68 + "╝")
+        output.append("")
+        output.append("✅ No SQL changes detected. You're good!")
+        output.append("")
+        output.append("─" * 70)
+        
         return CommitAdvisory(
             risk_level='GREEN',
             advisory='Safe to commit',
@@ -229,128 +386,22 @@ class PeerReviewOrchestrator:
             files_changed=0,
             technical_blockers=0,
             business_impact_summary='No changes detected',
-            formatted_output=self._format_no_changes()
+            formatted_output="\n".join(output)
         )
-    
-    def _synthesize_advisory(
-        self,
-        delta,
-        blast_radius,
-        technical_report,
-        business_report
-    ) -> CommitAdvisory:
-        """Synthesize all results into final advisory."""
-        
-        # Determine overall risk level
-        risk_level = self._calculate_risk_level(
-            delta=delta,
-            technical_report=technical_report,
-            business_report=business_report,
-            blast_radius=blast_radius
-        )
-        
-        # Determine advisory message
-        advisory = self._get_advisory_message(risk_level)
-        
-        # Count technical blockers
-        technical_blockers = len(technical_report.technical_blockers)
-        
-        # Get business impact summary
-        business_impact_summary = business_report.summary
-        
-        # Generate formatted output
-        formatted_output = self._format_advisory(
-            risk_level=risk_level,
-            advisory=advisory,
-            delta=delta,
-            blast_radius=blast_radius,
-            technical_report=technical_report,
-            business_report=business_report
-        )
-        
-        return CommitAdvisory(
-            risk_level=risk_level,
-            advisory=advisory,
-            semantic_delta=delta.to_dict(),
-            blast_radius=blast_radius.to_dict(),
-            technical_report=technical_report.to_dict(),
-            business_report=business_report.to_dict(),
-            files_changed=len(delta.details),
-            technical_blockers=technical_blockers,
-            business_impact_summary=business_impact_summary,
-            formatted_output=formatted_output
-        )
-    
-    def _calculate_risk_level(
-        self,
-        delta,
-        technical_report,
-        business_report,
-        blast_radius
-    ) -> str:
-        """
-        Calculate overall risk level.
-        
-        Returns: 'GREEN', 'YELLOW', or 'RED'
-        """
-        # RED if:
-        # - High severity technical blockers
-        # - High business impact + integrity flag
-        # - Critical leaf nodes impacted
-        
-        if technical_report.risk_level == 'HIGH':
-            return 'RED'
-        
-        if business_report.risk_level == 'HIGH' and delta.integrity_flag:
-            return 'RED'
-        
-        high_criticality_count = blast_radius.criticality_breakdown.get('HIGH', 0)
-        if high_criticality_count >= 3:  # 3+ high criticality nodes
-            return 'RED'
-        
-        # YELLOW if:
-        # - Medium technical issues
-        # - Medium business impact
-        # - Some high criticality nodes
-        
-        if technical_report.risk_level in ['MEDIUM', 'HIGH']:
-            return 'YELLOW'
-        
-        if business_report.risk_level == 'MEDIUM':
-            return 'YELLOW'
-        
-        if high_criticality_count > 0:
-            return 'YELLOW'
-        
-        # Otherwise GREEN
-        return 'GREEN'
-    
-    def _get_advisory_message(self, risk_level: str) -> str:
-        """Get advisory message based on risk level."""
-        if risk_level == 'GREEN':
-            return 'Safe to commit'
-        elif risk_level == 'YELLOW':
-            return 'Proceed with caution'
-        else:  # RED
-            return 'Manual review required'
-    
-    def _format_advisory(
+
+    def _format_output(
         self,
         risk_level: str,
         advisory: str,
-        delta,
-        blast_radius,
-        technical_report,
-        business_report
+        files: List[str],
+        syntax_errors: List[str],
+        changed_tables: List[str],
+        table_descriptions: Dict[str, str],
+        impact_chains: Dict[str, List]
     ) -> str:
-        """Format advisory for terminal output."""
+        """Format the clean peer review output."""
         
-        # Map risk level to emoji
-        risk_emoji = {
-            'GREEN': '🟢',
-            'YELLOW': '🟡',
-            'RED': '🔴'
-        }
+        risk_emoji = {'GREEN': '🟢', 'YELLOW': '🟡', 'RED': '🔴'}
         
         output = []
         output.append("")
@@ -359,154 +410,105 @@ class PeerReviewOrchestrator:
         output.append("╚" + "="*68 + "╝")
         output.append("")
         
+        # Risk level
         output.append(f"Risk Level: {risk_emoji.get(risk_level, '⚪')} {risk_level} - {advisory}")
         output.append("")
         
-        # Files changed
-        output.append("📋 Files Changed (Direct Edits):")
-        output.append("   These are the files you touched directly.")
-        for filename in delta.details.keys():
-            output.append(f"   • {filename}")
-        output.append("")
-        
-        # Detailed passively impacted files (downstream dependencies)
-        if blast_radius.impacted_nodes:
-            output.append("🔗 Indirectly Impacted Files (Downstream Impact Chain):")
-            output.append("   These files didn't change, but they USE data from the files you changed — like dominoes!")
+        # ── Section 1: Syntax Errors (only if found) ──
+        if syntax_errors:
+            output.append("⚠️  Syntax Errors:")
+            output.append("   These are bugs that will BREAK your code if deployed.")
+            for error in syntax_errors:
+                output.append(f"   🔴 {error}")
             output.append("")
-            
-            # Group by distance (hop count) to show impact propagation
-            by_distance = {}
-            for node in blast_radius.impacted_nodes:
-                dist = node['distance']
-                if dist not in by_distance:
-                    by_distance[dist] = []
-                by_distance[dist].append(node)
-            
-            # Show impact propagation level by level
-            for distance in sorted(by_distance.keys()):
-                nodes_at_distance = by_distance[distance]
-                
-                if distance == 1:
-                    output.append(f"   📍 Level {distance} - Direct Dependencies ({len(nodes_at_distance)} table(s)):")
+        
+        # ── Section 2: Directly Changed Tables ──
+        output.append("📋 Directly Changed Tables:")
+        output.append("   These are the tables whose logic you modified.")
+        if changed_tables:
+            for table in sorted(changed_tables):
+                desc = table_descriptions.get(table, "")
+                if desc:
+                    output.append(f"   • {table}  — {desc}")
                 else:
-                    output.append(f"   📍 Level {distance} - {distance} Hops Away ({len(nodes_at_distance)} table(s)):")
-                
-                # Group by criticality at this level
-                high = [n for n in nodes_at_distance if n['criticality'] == 'HIGH']
-                medium = [n for n in nodes_at_distance if n['criticality'] == 'MEDIUM']
-                low = [n for n in nodes_at_distance if n['criticality'] == 'LOW']
-                
-                for node in high[:3]:
-                    output.append(f"      🔴 {node['table']}")
-                    output.append(f"         Type: {node['node_type']}")
-                    if node.get('file_path'):
-                        output.append(f"         File: {node['file_path']}")
-                
-                for node in medium[:3]:
-                    output.append(f"      🟡 {node['table']}")
-                    output.append(f"         Type: {node['node_type']}")
-                    if node.get('file_path'):
-                        output.append(f"         File: {node['file_path']}")
-                
-                for node in low[:2]:
-                    output.append(f"      🟢 {node['table']}")
-                    output.append(f"         Type: {node['node_type']}")
-                    if node.get('file_path'):
-                        output.append(f"         File: {node['file_path']}")
-                
-                # Show count if truncated
-                shown = min(3, len(high)) + min(3, len(medium)) + min(2, len(low))
-                if len(nodes_at_distance) > shown:
-                    output.append(f"      ... and {len(nodes_at_distance) - shown} more at this level")
-                
-                output.append("")
-            
-            # Summary
-            total_impacted = len(blast_radius.impacted_nodes)
-            leaf_count = len(blast_radius.leaf_nodes)
-            output.append(f"   📊 Impact Summary:")
-            output.append(f"      • Total impacted: {total_impacted} table(s)")
-            output.append(f"      • Critical dashboards/reports: {leaf_count}")
-            output.append(f"      • Cascade depth: {max(by_distance.keys())} level(s)")
-            output.append("")
+                    output.append(f"   • {table}")
         else:
-            output.append("🔗 Indirectly Impacted Files:")
-            output.append("   These files didn't change, but they USE data from the files you changed — like dominoes!")
-            output.append("   ✅ No downstream dependencies detected")
-            output.append("   (Run 'python scripts/cli.py build' to build lineage metadata)")
-            output.append("")
-        
-        # Technical blockers
-        if technical_report.technical_blockers:
-            output.append("⚠️  Technical Blockers:")
-            output.append("   These are bugs or mistakes that could BREAK things if you deploy this code.")
-            for blocker in technical_report.technical_blockers:
-                severity = blocker['severity']
-                message = blocker['message']
-                output.append(f"   • [{severity}] {message}")
-            output.append("")
-        
-        # Business impact
-        if business_report.business_impact:
-            impact = business_report.business_impact
-            output.append("📊 Business Impact:")
-            output.append("   This is how your change might affect the numbers people see in reports and dashboards.")
-            output.append(f"   • {impact.get('predicted_shift', 'Unknown impact')}")
-            if impact.get('metric_drift_detected'):
-                output.append(f"   • Metric drift detected in {len(impact.get('affected_metrics', []))} metric(s)")
-            output.append("")
-        
-        # Blast radius
-        output.append("🔍 Blast Radius:")
-        output.append("   This shows HOW FAR your change ripples through the system — like throwing a stone in water.")
-        output.append(f"   • {len(blast_radius.impacted_nodes)} downstream table(s) affected")
-        output.append(f"   • {len(blast_radius.leaf_nodes)} dashboard/report(s) impacted")
-        if blast_radius.criticality_breakdown:
-            crit = blast_radius.criticality_breakdown
-            output.append(f"   • Criticality: {crit.get('HIGH', 0)} HIGH, {crit.get('MEDIUM', 0)} MEDIUM, {crit.get('LOW', 0)} LOW")
+            output.append("   (none)")
         output.append("")
         
-        # Advisory
+        # ── Section 3: Impact Chain (Downstream Dominos) ──
+        output.append("🔗 Impact Chain (Downstream Dominos):")
+        output.append("   These tables DEPEND on the ones you changed — they'll be affected too.")
+        
+        has_any_chain = any(len(chain) > 0 for chain in impact_chains.values())
+        
+        if has_any_chain:
+            output.append("")
+            for table in sorted(impact_chains.keys()):
+                chain = impact_chains[table]
+                if not chain:
+                    continue
+                output.append(f"   {table}")
+                for i, (downstream, distance) in enumerate(chain):
+                    is_last = (i == len(chain) - 1)
+                    connector = "└─→" if is_last else "├─→"
+                    hop_label = "1 hop - direct dependency" if distance == 1 else f"{distance} hops away"
+                    output.append(f"     {connector} {downstream} ({hop_label})")
+                output.append("")
+        else:
+            output.append("   ✅ No downstream dependencies found.")
+            # Check if lineage metadata exists
+            has_lineage = False
+            if self.debug_engine:
+                try:
+                    meta = self.debug_engine._check_metadata_exists()
+                    has_lineage = meta.get('table_lineage', False)
+                except:
+                    pass
+            if not has_lineage:
+                output.append("   💡 Run 'python scripts/cli.py build' to build lineage metadata.")
+            output.append("")
+        
+        # ── Section 4: Advisory ──
         output.append("💡 Advisory:")
-        output.append("   This is the final recommendation — what you should do next.")
         if risk_level == 'RED':
-            output.append("   " + advisory.upper())
+            output.append(f"   {advisory.upper()}")
             output.append("")
             output.append("   Recommended actions:")
-            output.append("   1. Review technical blockers and fix issues")
-            output.append("   2. Validate business impact with stakeholders")
-            output.append("   3. Test changes in staging environment")
-            output.append("   4. Update documentation if metrics changed")
+            if syntax_errors:
+                output.append("   1. Fix syntax errors before committing")
+            else:
+                output.append("   1. Review all impacted downstream tables")
+                output.append("   2. Test changes in staging environment")
+                output.append("   3. Notify stakeholders of metric changes")
         elif risk_level == 'YELLOW':
-            output.append("   " + advisory)
+            output.append(f"   {advisory}")
             output.append("")
             output.append("   Recommended actions:")
-            output.append("   1. Review warnings carefully")
-            output.append("   2. Consider adding tests for affected areas")
+            output.append("   1. Review downstream impact chain above")
+            output.append("   2. Verify downstream tables still produce correct results")
             output.append("   3. Monitor metrics after deployment")
         else:
-            output.append("   ✅ " + advisory)
-            output.append("   No significant issues detected")
+            output.append(f"   ✅ {advisory}")
+            output.append("   No significant risks detected.")
         
         output.append("")
         output.append("─" * 70)
         
         return "\n".join(output)
-    
+
     def _format_no_changes(self) -> str:
         """Format output when no changes detected."""
-        return """
-╔══════════════════════════════════════════════════════════════════╗
-║                    SENIOR PEER REVIEW                            ║
-╚══════════════════════════════════════════════════════════════════╝
-
-Risk Level: 🟢 GREEN - Safe to commit
-
-No significant code changes detected in staged files.
-
-──────────────────────────────────────────────────────────────────
-"""
+        output = []
+        output.append("")
+        output.append("╔" + "="*68 + "╗")
+        output.append("║" + " "*20 + "SENIOR PEER REVIEW" + " "*30 + "║")
+        output.append("╚" + "="*68 + "╝")
+        output.append("")
+        output.append("✅ No SQL changes detected. You're good!")
+        output.append("")
+        output.append("─" * 70)
+        return "\n".join(output)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -516,11 +518,9 @@ No significant code changes detected in staged files.
 if __name__ == '__main__':
     import json
     
-    # Test orchestrator
     orchestrator = PeerReviewOrchestrator()
-    advisory = orchestrator.review_changes(staged_only=True)
+    advisory = orchestrator.review_changes(staged_only=False)
     
-    # Print formatted output
     print(advisory.formatted_output)
     
     # Also save JSON for debugging

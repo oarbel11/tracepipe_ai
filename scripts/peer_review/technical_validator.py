@@ -603,6 +603,16 @@ class TechnicalValidator:
         """
         Check SQL code for syntax errors.
         
+        Checks:
+        1. Unknown schema names (validated against database)
+        2. SQL keyword typos (SELCT, FRON, etc.)
+        3. Unmatched parentheses
+        4. Unclosed string literals
+        5. Missing FROM clause after SELECT
+        6. Aggregation without GROUP BY
+        7. Trailing comma before FROM/WHERE/GROUP BY
+        8. Duplicate column aliases
+        
         Returns:
             List of error messages (empty if valid)
         """
@@ -610,34 +620,70 @@ class TechnicalValidator:
             return []
         
         errors = []
+        lines = sql_code.split('\n')
         sql_upper = sql_code.upper()
         
-        # Check for common SQL keyword typos
+        # ── 1. Unknown schema names ──
+        # Get known schemas from database
+        known_schemas = set()
+        if self.engine:
+            try:
+                for s in self.engine.list_schemas():
+                    known_schemas.add(s.lower())
+            except:
+                pass
+        
+        if known_schemas:
+            # Find schema references in CREATE TABLE schema.table and FROM/JOIN schema.table
+            schema_pattern = re.compile(
+                r'(?:CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+|FROM\s+|JOIN\s+)(\w+)\.(\w+)',
+                re.IGNORECASE
+            )
+            for match in schema_pattern.finditer(sql_code):
+                schema_name = match.group(1).lower()
+                if schema_name not in known_schemas:
+                    # Find line number
+                    pos = match.start()
+                    line_num = sql_code[:pos].count('\n') + 1
+                    # Suggest closest match
+                    suggestion = self._suggest_closest(schema_name, known_schemas)
+                    msg = f"Unknown schema '{schema_name}' at line {line_num}"
+                    if suggestion:
+                        msg += f" (did you mean '{suggestion}'?)"
+                    errors.append(msg)
+        
+        # ── 2. SQL keyword typos ──
         typo_map = {
-            'TABL ': 'TABLE',
-            'SELCT ': 'SELECT',
-            'CREAT ': 'CREATE',
-            'WHER ': 'WHERE',
-            'FRON ': 'FROM',
-            'JOUN ': 'JOIN',
-            'GROPU ': 'GROUP',
-            'ODER ': 'ORDER',
+            'TABL ': 'TABLE', 'TABEL ': 'TABLE',
+            'SELCT ': 'SELECT', 'SELCET ': 'SELECT', 'SELET ': 'SELECT',
+            'CREAT ': 'CREATE', 'CRAETE ': 'CREATE',
+            'WHER ': 'WHERE', 'WEHRE ': 'WHERE', 'WHRE ': 'WHERE',
+            'FRON ': 'FROM', 'FORM ': 'FROM', 'RFOM ': 'FROM',
+            'JOUN ': 'JOIN', 'JION ': 'JOIN', 'JINH ': 'JOIN',
+            'GROPU ': 'GROUP', 'GRUOP ': 'GROUP', 'GORUP ': 'GROUP',
+            'ODER ': 'ORDER', 'ORDR ': 'ORDER',
             'SCHE ': 'SCHEMA',
+            'INSRT ': 'INSERT', 'INSET ': 'INSERT',
+            'UDPATE ': 'UPDATE', 'UPDAT ': 'UPDATE',
+            'DELET ': 'DELETE', 'DELTE ': 'DELETE',
+            'DISTINT ': 'DISTINCT', 'DISTICT ': 'DISTINCT',
+            'EXISITS ': 'EXISTS', 'EXSITS ': 'EXISTS',
+            'HAVIGN ': 'HAVING', 'HAIVNG ': 'HAVING',
+            'BETWEE ': 'BETWEEN', 'BEETWEEN ': 'BETWEEN',
+            'COALESEC ': 'COALESCE', 'COALESC ': 'COALESCE',
         }
         
         for typo, correct in typo_map.items():
             if typo in sql_upper:
-                # Find line number
-                lines = sql_code.split('\n')
                 for i, line in enumerate(lines, 1):
                     if typo.strip() in line.upper():
                         errors.append(
-                            f"SQL Syntax Error at line {i}: Invalid keyword '{typo.strip()}' "
+                            f"SQL keyword typo at line {i}: '{typo.strip()}' "
                             f"(did you mean '{correct}'?)"
                         )
                         break
         
-        # Check for unmatched parentheses
+        # ── 3. Unmatched parentheses ──
         open_parens = sql_code.count('(')
         close_parens = sql_code.count(')')
         if open_parens != close_parens:
@@ -645,7 +691,88 @@ class TechnicalValidator:
                 f"Unmatched parentheses: {open_parens} opening, {close_parens} closing"
             )
         
+        # ── 4. Unclosed string literals ──
+        for i, line in enumerate(lines, 1):
+            # Strip comments first
+            stripped = re.sub(r'--.*$', '', line)
+            single_quotes = stripped.count("'")
+            if single_quotes % 2 != 0:
+                errors.append(f"Unclosed string literal at line {i}")
+        
+        # ── 5. Missing FROM clause ──
+        # Split into SQL statements (by semicolon)
+        statements = re.split(r';', sql_code)
+        for stmt in statements:
+            stmt_stripped = stmt.strip()
+            if not stmt_stripped:
+                continue
+            stmt_upper = stmt_stripped.upper()
+            # If it has SELECT but no FROM (and isn't a subquery or SELECT literal)
+            if re.search(r'\bSELECT\b', stmt_upper):
+                if not re.search(r'\bFROM\b', stmt_upper):
+                    # Allow SELECT without FROM for simple expressions like SELECT 1
+                    # Only flag if it references columns
+                    if re.search(r'\bSELECT\b.*[a-z_]+\.\w+', stmt_stripped, re.IGNORECASE):
+                        errors.append("SELECT references table columns but has no FROM clause")
+        
+        # ── 6. Aggregation without GROUP BY ──
+        # Check each CREATE TABLE ... AS SELECT block
+        create_blocks = re.split(r'(?=CREATE\s)', sql_code, flags=re.IGNORECASE)
+        for block in create_blocks:
+            block_upper = block.upper()
+            has_agg = any(f + '(' in block_upper for f in ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN'])
+            has_group_by = 'GROUP BY' in block_upper
+            has_select = 'SELECT' in block_upper
+            # If has aggregation + non-aggregated columns but no GROUP BY
+            if has_agg and has_select and not has_group_by:
+                # Check if there are non-aggregated columns in SELECT
+                select_match = re.search(r'SELECT\s+(.*?)(?:FROM)', block_upper, re.DOTALL)
+                if select_match:
+                    select_cols = select_match.group(1)
+                    # If there are plain column references alongside aggregations
+                    non_agg_cols = re.sub(r'(SUM|AVG|COUNT|MAX|MIN)\s*\([^)]*\)', '', select_cols)
+                    if re.search(r'[A-Z_]\w*', non_agg_cols):
+                        # Find approximate line
+                        for i, line in enumerate(lines, 1):
+                            if any(f + '(' in line.upper() for f in ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN']):
+                                errors.append(f"Aggregation at line {i} without GROUP BY — results may be wrong")
+                                break
+        
+        # ── 7. Trailing comma before FROM/WHERE/GROUP BY ──
+        trailing_comma = re.compile(r',\s*\n\s*(FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING)\b', re.IGNORECASE)
+        for match in trailing_comma.finditer(sql_code):
+            pos = match.start()
+            line_num = sql_code[:pos].count('\n') + 1
+            keyword = match.group(1).strip()
+            errors.append(f"Trailing comma before {keyword} at line {line_num}")
+        
+        # ── 8. Duplicate column aliases ──
+        alias_pattern = re.compile(r'\bAS\s+(\w+)', re.IGNORECASE)
+        for block in create_blocks:
+            aliases = []
+            for match in alias_pattern.finditer(block):
+                alias = match.group(1).upper()
+                if alias in aliases:
+                    pos = match.start()
+                    line_num = block[:pos].count('\n') + 1
+                    errors.append(f"Duplicate column alias '{match.group(1)}'")
+                    break
+                aliases.append(alias)
+        
         return errors
+    
+    @staticmethod
+    def _suggest_closest(name: str, known: set) -> Optional[str]:
+        """Find the closest match from known names (simple edit distance)."""
+        best = None
+        best_dist = float('inf')
+        for candidate in known:
+            # Simple: count character differences
+            dist = sum(1 for a, b in zip(name, candidate) if a != b) + abs(len(name) - len(candidate))
+            if dist < best_dist and dist <= 3:  # Max 3 edits
+                best_dist = dist
+                best = candidate
+        return best
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

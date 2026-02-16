@@ -1,657 +1,323 @@
-# 🔍 Debug AI - Talk to Your Data Lake!
+# Debug AI
 
-Ask questions about your data in plain English:
+**Data lineage debugger and peer review system for SQL pipelines.**
 
-> *"How is the risk_level column calculated?"*
+Debug AI connects to your database, traces how every table and column is built, and catches mistakes before they reach production. It has two main features:
 
-> *"What tables feed into the sales report?"*
-
-> *"Why is this customer marked as high risk?"*
-
-And get answers based on your **actual SQL transformations**!
+1. **Lineage Engine** — Trace how any column is calculated, all the way back to source tables
+2. **Peer Review** — Automatically check your SQL changes for syntax errors and downstream impact
 
 ---
 
-## 📁 What You Need
+## Installation
 
-- ✅ A database: `.duckdb` file **OR** Databricks workspace
-- ✅ SQL files with your transformations (`CREATE TABLE ... AS SELECT ...`)
-- ✅ Python 3.8+
-- ✅ Cursor or Claude Desktop
+### 1. Clone and set up
 
----
-
-## 🚀 Quick Start
-
-### 1. Install
-
-```powershell
-pip install duckdb pandas mcp
-```
-
-### 2. Setup (point to YOUR database and SQL files)
-
-```powershell
-python scripts/cli.py init --db "C:\path\to\your\database.duckdb" --sql "C:\path\to\sql\files"
-python scripts/cli.py build
-python scripts/cli.py test
-```
-
-### 3. Connect to Cursor
-
-Add to Cursor settings, then restart Cursor:
-```json
-{
-  "mcpServers": {
-    "debug-ai": {
-      "command": "python",
-      "args": ["C:\\path\\to\\debug_ai\\mcp_server.py"]
-    }
-  }
-}
-```
-
-### 4. Start Asking Questions!
-
-Open Cursor and chat with your data.
-
----
-
-## 📖 Full Setup Guide
-
-### STEP 1: Download & Install (5 minutes)
-
-#### 1.1 Download the Project
-
-**Option A: With Git**
-```powershell
-git clone https://github.com/YOUR_USERNAME/debug_ai.git
+```bash
+git clone <your-repo-url>
 cd debug_ai
 ```
 
-**Option B: Without Git**
-1. Download ZIP from GitHub
-2. Unzip it
-3. Open PowerShell:
-```powershell
-cd C:\Users\YourName\Downloads\debug_ai
+### 2. Create virtual environment
+
+```bash
+python -m venv .venv
+
+# Windows
+.venv\Scripts\activate
+
+# Mac/Linux
+source .venv/bin/activate
 ```
 
-#### 1.2 Install Python Packages
+### 3. Install dependencies
 
-```powershell
-pip install duckdb pandas mcp
+```bash
+pip install -r requirements.txt
 ```
 
-Wait for "Successfully installed..." message.
+### 4. Configure your database
 
-#### 1.3 Verify It Works
-
-```powershell
-python scripts/cli.py --help
-```
-
-You should see a list of commands.
-
----
-
-### STEP 2: Configure Your Database (2-5 minutes)
-
-Choose your database type:
-
-#### Option A: DuckDB (Local Database)
-
-You need TWO paths:
-- **Database path** - where your `.duckdb` file is
-- **SQL folder path** - where your SQL transformation files are
-
-```powershell
-python scripts/cli.py init --db "C:\YOUR\PATH\database.duckdb" --sql "C:\YOUR\PATH\sql_folder"
-```
-
-**Real example:**
-```powershell
-python scripts/cli.py init --db "D:\DataLake\warehouse.duckdb" --sql "D:\DataLake\etl\transformations"
-```
-
-You should see:
-```
-✅ Database: D:\DataLake\warehouse.duckdb
-✅ SQL Directory: D:\DataLake\etl\transformations (15 files)
-✅ Configuration saved
-```
-
-#### Option B: Databricks (Cloud Data Platform) ☁️
-
-**Step 2B.1: Install Databricks connector**
-```powershell
-pip install databricks-sql-connector
-```
-
-**Step 2B.2: Edit `config/config.yml`**
+Edit `config/config.yml` — set `db_type` and your database path:
 
 ```yaml
-# Set database type to databricks
-db_type: "databricks"
+# For local DuckDB:
+db_type: "duckdb"
+duckdb:
+  path: "companies_data_duckdb/corporate.duckdb"
 
-# Databricks Configuration  
-databricks:
-  host: "your-workspace.cloud.databricks.com"    # Without https://
-  token: "dapi..."                                # Your Personal Access Token
-  http_path: "/sql/1.0/warehouses/abc123"         # From SQL Warehouse connection details
-  catalog: "your_catalog"                         # e.g., main, hive_metastore, etc.
+# For Databricks: see "Connections" section below
 ```
 
-**Where to find your credentials:**
-| Setting | Location in Databricks |
-|---------|------------------------|
-| `host` | Your workspace URL (e.g., `dbc-xxxxx.cloud.databricks.com`) |
-| `token` | **User Settings → Developer → Access Tokens → Generate New Token** |
-| `http_path` | **SQL Warehouses → [Your Warehouse] → Connection Details** |
-| `catalog` | **Data → Catalog** (Unity Catalog name) |
+### 5. Build lineage metadata
 
-**Step 2B.3: Test the connection**
-```powershell
-python config/db_config.py
+This parses your SQL files and builds the lineage graph:
+
+```bash
+python scripts/cli.py build
 ```
 
-Expected output:
-```
-Database Configuration
-==================================================
-Database Type: databricks
-Host: your-workspace.cloud.databricks.com
-Catalog: your_catalog
-HTTP Path: /sql/1.0/warehouses/xxx
-Token: ***xxxx
-
-✅ Configuration loaded successfully
-Schemas found: ['raw', 'silver', 'gold']
-```
+You only need to run this once, and again when you add/change SQL files.
 
 ---
 
-### STEP 3: Configure Lineage Source
+## Feature 1: Lineage Engine
 
-Choose how you want lineage metadata to be collected:
+The lineage engine traces how data flows through your SQL pipeline — from raw source tables through silver/conformed layers.
 
-#### Option A: Local SQL Files (Default for DuckDB)
+### How to use
 
-If you have your SQL/ETL files locally, parse them to build lineage metadata:
+**List all tables:**
 
-1. **Set in `config/config.yml`:**
-   ```yaml
-   lineage_source: "local"
-   etl_dir: "path/to/your/sql/files"
-   ```
-
-2. **Run the build:**
-   ```powershell
-   python scripts/cli.py build
-   ```
-
-   You should see:
-   ```
-   📄 Parsing: 01_raw_to_silver.sql
-     ✅ Found: silver.customers
-        └─ Sources: raw.customers
-     ✅ Found: silver.orders
-        └─ Sources: raw.orders, raw.products
-        └─ Computed: total_amount
-
-   ✨ BUILD COMPLETE!
-      📊 Tables: 5
-      🔗 Table lineage: 8
-      📝 Column lineage: 3
-   ```
-
-#### Option B: Databricks Unity Catalog (Automatic Lineage) ☁️
-
-If you're using Databricks with Unity Catalog, lineage is tracked **automatically**!
-
-1. **Set in `config/config.yml`:**
-   ```yaml
-   db_type: "databricks"
-   lineage_source: "databricks"
-   ```
-
-2. **No build step needed!** Unity Catalog tracks lineage automatically when:
-   - Tables are created/updated via SQL or Spark
-   - Jobs run on your cluster
-
-3. **Test it:**
-   ```python
-   from scripts.debug_engine import DebugEngine
-   engine = DebugEngine()
-   
-   # Get tables that feed into a target table
-   sources = engine.get_upstream_tables('silver.customers')
-   print(sources)
-   ```
-
-**Note:** Unity Catalog lineage requires:
-- Unity Catalog enabled on your workspace
-- Tables registered in a Unity Catalog
-- Access to `system.access.table_lineage` and `system.access.column_lineage`
-
-#### Option C: Auto-Detect
-
-Let the system choose automatically:
-
-```yaml
-lineage_source: "auto"
-etl_dir: "etl"  # Will use local if SQL files exist here
-```
-
-- If `etl_dir` has `.sql` files → uses **local** parsing
-- If no SQL files but db_type is `databricks` → uses **Unity Catalog**
-
----
-
-### STEP 4: Verify Everything Works (1 minute)
-
-#### 4.1 Scan Your Database
-
-```powershell
+```bash
 python scripts/cli.py scan
 ```
 
-You should see:
-```
-📂 Schemas:
-   • raw
-   • silver
-   • gold
-   • meta          ← This should appear now!
+**Trace how a column is calculated:**
 
-📋 Tables:
-   • meta.table_lineage (8 rows)    ← Metadata created!
-   • meta.column_lineage (3 rows)   ← Metadata created!
-   • raw.customers (1,000 rows)
-   • silver.orders (5,000 rows)
-   ...
-
-📊 Metadata Status:
-   ✅ table_lineage
-   ✅ column_lineage
-```
-
-**Both must show ✅!**
-
-#### 4.2 Run Full Test
-
-```powershell
-python scripts/cli.py test
-```
-
-All items should show ✅.
-
----
-
-### STEP 5: Connect to Cursor (3 minutes)
-
-Now the fun part - talk to your data!
-
-#### 5.1 Get Your Project Path
-
-Run this and **copy the output**:
-
-```powershell
-(Get-Location).Path
-```
-
-Example output: `C:\Users\John\debug_ai`
-
-#### 5.2 Open Cursor Settings
-
-1. Open Cursor
-2. Press `Ctrl + Shift + P`
-3. Type `settings json`
-4. Click **"Preferences: Open User Settings (JSON)"**
-
-#### 5.3 Add the MCP Server
-
-Add this to your settings file (**replace the path with YOUR path from 5.1**):
-
-```json
-{
-  "mcpServers": {
-    "debug-ai": {
-      "command": "python",
-      "args": ["C:\\Users\\John\\debug_ai\\mcp_server.py"]
-    }
-  }
-}
-```
-
-**⚠️ IMPORTANT:** Use double backslashes `\\` not single `\`
-
-#### 5.4 Restart Cursor
-
-Close Cursor completely and open it again.
-
----
-
-### STEP 6: Start Talking! 🎉
-
-In Cursor, you can now ask:
-
-> "What tables do I have?"
-
-> "What columns are in the customers table?"
-
-> "How is the total_revenue column calculated?"
-
-> "What tables feed into the sales_report?"
-
-> "Why might the monthly_revenue be wrong?"
-
-Cursor will use the MCP server to answer based on your actual data lineage!
-
----
-
-## 📝 Recent Updates
-
-See [UPDATE.md](UPDATE.md) for the latest features and enhancements.
-
----
-
-## ⚙️ Database Configuration (`config/db_config.py`)
-
-The `db_config.py` file provides flexible, auto-detecting configuration that works with multiple database types. It automatically finds your database and SQL files, or you can configure it manually.
-
-### How It Works
-
-**Auto-Detection (Default):**
-The system automatically searches for:
-- **Database files**: `*.duckdb` in common locations:
-  - `data/*.duckdb`
-  - `companies_data/*.duckdb`
-  - `*.duckdb` (project root)
-  - `database/*.duckdb`
-  - `db/*.duckdb`
-
-- **SQL/ETL directories**: Common folder names:
-  - `etl/`
-  - `sql/`
-  - `transformations/`
-  - `data/etl/`
-  - `companies_data/etl/`
-  - `dbt/models/`
-
-### Configuration Methods
-
-#### Method 1: Environment Variables (Recommended)
-
-Set environment variables for explicit control:
-
-**Windows (PowerShell):**
-```powershell
-$env:DEBUG_AI_DB_PATH = "C:\DataLake\warehouse.duckdb"
-$env:DEBUG_AI_ETL_DIR = "C:\DataLake\etl"
-$env:DEBUG_AI_DB_TYPE = "duckdb"
-```
-
-**Windows (Command Prompt):**
-```cmd
-set DEBUG_AI_DB_PATH=C:\DataLake\warehouse.duckdb
-set DEBUG_AI_ETL_DIR=C:\DataLake\etl
-set DEBUG_AI_DB_TYPE=duckdb
-```
-
-**Linux/Mac:**
 ```bash
-export DEBUG_AI_DB_PATH="/path/to/warehouse.duckdb"
-export DEBUG_AI_ETL_DIR="/path/to/etl"
-export DEBUG_AI_DB_TYPE="duckdb"
+python scripts/cli.py query conformed.churn_risk risk_level
 ```
 
-#### Method 2: Default Locations
+This shows the full chain: which source tables feed into it, what SQL logic builds it, and where the code is defined.
 
-Simply place your files in standard locations:
-- Database: `data/warehouse.duckdb` or `companies_data/corporate.duckdb`
-- SQL files: `etl/` or `sql/` folder in project root
+**Get upstream sources for a table:**
 
-#### Method 3: Check Configuration
-
-Verify what was detected:
-```powershell
-python config/db_config.py
+```bash
+python scripts/cli.py query --sources conformed.churn_risk
 ```
 
-Output example:
-```
-============================================================
-📒 DEBUG AI - Configuration Check
-============================================================
+**Get full lineage tree:**
 
-  ✅ project_root
-     └─ C:\Users\John\debug_ai
-  ✅ database
-     └─ C:\Users\John\debug_ai\companies_data\corporate.duckdb
-  ✅ etl_directory
-     └─ C:\Users\John\debug_ai\companies_data\etl
-  ℹ️  db_type: duckdb
-
-============================================================
+```bash
+python scripts/cli.py query --tree conformed.churn_risk
 ```
 
-### Using Different Database Types
+### Example output
 
-The system supports multiple database backends. Configure via `DEBUG_AI_DB_TYPE` environment variable.
+```
+python scripts/cli.py query conformed.churn_risk risk_level
 
-#### DuckDB (Default)
+🔍 Column Lineage Report: conformed.churn_risk.risk_level
 
-No additional configuration needed if using file-based DuckDB:
+📊 Column Definition:
+   CASE
+     WHEN cs.total_jobs >= 3 THEN 'HIGH (Job Hopper)'
+     WHEN cs.peak_salary < 50000 THEN 'HIGH (Underpaid)'
+     ELSE 'LOW'
+   END AS risk_level
 
-```powershell
-$env:DEBUG_AI_DB_PATH = "C:\Data\warehouse.duckdb"
-$env:DEBUG_AI_DB_TYPE = "duckdb"  # Optional, this is the default
+📦 Source Tables:
+   • conformed.career_summary → cs.total_jobs, cs.peak_salary
+   • silver.dim_employees → e.full_name
+
+📁 Defined in: companies_data_duckdb/etl/01_corporate_logic.sql
 ```
 
-#### Databricks ✅ (Fully Supported)
+### MCP Server (for AI tools)
 
-Databricks is now fully integrated! Configure it in `config/config.yml`:
+Both features work via MCP so AI tools like Claude can use them from chat:
 
-**Step 1: Edit `config/config.yml`**
+```bash
+python mcp_server.py
+```
+
+Once running, just ask your AI tool:
+- *"Explain how risk_level is calculated"* → uses the lineage engine
+- *"Peer review my changes"* → runs the full peer review and shows the report
+
+---
+
+## Feature 2: Peer Review
+
+The peer review checks your SQL changes for:
+
+1. **Syntax errors** — unknown schemas, keyword typos, unmatched parentheses, unclosed strings, missing FROM/GROUP BY, trailing commas, duplicate aliases
+2. **Impact chain** — shows which tables you changed and which downstream tables will be affected (the "domino effect")
+
+### What it catches
+
+| Check | Example |
+|-------|---------|
+| Unknown schema | `silv.my_table` → *"did you mean 'silver'?"* |
+| Keyword typos | `SELCT`, `FRON`, `JOUN`, `WEHRE`, `FORM` |
+| Unmatched parentheses | `COUNT(salary` missing `)` |
+| Unclosed strings | `WHERE name = 'Alice` |
+| Missing FROM | `SELECT t.col` with no `FROM` |
+| Aggregation without GROUP BY | `SUM(salary)` with plain columns |
+| Trailing comma | `col1, FROM table` |
+| Duplicate aliases | Two columns both `AS total` |
+
+### How to use
+
+**From chat (MCP):** Just ask your AI tool *"run peer review"* or *"check my code"*.
+
+**From terminal:**
+
+```bash
+python scripts/cli.py peer-review check
+```
+
+Both methods compare your changed files (including new untracked files) against the last git commit and show the impact.
+
+### Options
+
+```bash
+# Only check git-staged files:
+python scripts/cli.py peer-review check --staged-only
+
+# Save report as JSON:
+python scripts/cli.py peer-review check --output report.json
+
+# Block commit on RED risk (for git hooks):
+python scripts/cli.py peer-review check --block
+```
+
+### Install as git hook
+
+Run automatically before every commit:
+
+```bash
+python scripts/cli.py peer-review install-hook
+```
+
+### Example: 🟡 YELLOW (logic change with downstream impact)
+
+```
+╔====================================================================╗
+║                    SENIOR PEER REVIEW                              ║
+╚====================================================================╝
+
+Risk Level: 🟡 YELLOW - Proceed with caution
+
+📋 Directly Changed Tables:
+   • conformed.career_summary  — Added WHERE salary > 80000
+   • conformed.company_stats  — AVG() changed to SUM()
+
+🔗 Impact Chain (Downstream Dominos):
+   conformed.career_summary
+     └─→ conformed.churn_risk (1 hop - direct dependency)
+
+   conformed.company_stats
+     └─→ conformed.total_compensation (1 hop - direct dependency)
+```
+
+### Example: 🔴 RED (syntax error caught)
+
+```
+╔====================================================================╗
+║                    SENIOR PEER REVIEW                              ║
+╚====================================================================╝
+
+Risk Level: 🔴 RED - Manual review required
+
+⚠️  Syntax Errors:
+   🔴 Unknown schema 'silv' at line 3 (did you mean 'silver'?)
+
+📋 Directly Changed Tables:
+   • silv.dim_departments  — NEW TABLE added
+
+💡 Advisory:
+   MANUAL REVIEW REQUIRED
+   1. Fix syntax errors before committing
+```
+
+### Risk levels
+
+| Level | What it means |
+|-------|--------------|
+| 🟢 GREEN | Safe to commit. No downstream impact. |
+| 🟡 YELLOW | Downstream tables will be affected. Review the impact chain. |
+| 🔴 RED | Syntax errors found, or many tables affected. Fix before deploying. |
+
+---
+
+## Connections
+
+Debug AI supports two database types: **DuckDB** (local) and **Databricks**.
+
+### DuckDB (local)
+
+DuckDB is the default — no server needed. Everything runs on your machine.
+
+**Setup in `config/config.yml`:**
 
 ```yaml
-# Set database type to databricks
-db_type: "databricks"
+db_type: "duckdb"
+lineage_source: "local"
+sql_dir: "companies_data_duckdb/etl"
 
-# Databricks Configuration
+duckdb:
+  path: "companies_data_duckdb/corporate.duckdb"
+```
+
+**Populate sample data (optional):**
+
+```bash
+python companies_data_duckdb/setup_raw.py
+```
+
+**Build lineage:**
+
+```bash
+python scripts/cli.py build
+```
+
+### Databricks
+
+Connect to a Databricks workspace with Unity Catalog for automatic lineage tracking.
+
+**Setup in `config/config.yml`:**
+
+```yaml
+db_type: "databricks"
+lineage_source: "databricks"
+
 databricks:
   host: "your-workspace.cloud.databricks.com"
-  token: "your-personal-access-token"
+  token: "dapi..."
   http_path: "/sql/1.0/warehouses/your-warehouse-id"
-  catalog: "your_catalog_name"
+  catalog: "your_catalog"
 ```
 
-**Step 2: Get Your Databricks Credentials**
+**How to get your connection details:**
 
-| Setting | Where to Find It |
-|---------|------------------|
-| `host` | Your Databricks workspace URL (without `https://`) |
-| `token` | **User Settings → Developer → Access Tokens → Generate New Token** |
-| `http_path` | **SQL Warehouses → Your Warehouse → Connection Details → HTTP Path** |
-| `catalog` | The Unity Catalog you want to query (e.g., `hive_metastore`, `main`, etc.) |
+1. **Host**: Your Databricks workspace URL (without `https://`)
+2. **Token**: Go to Settings → Developer → Access Tokens → Generate New Token
+3. **HTTP Path**: Go to SQL Warehouses → your warehouse → Connection Details → HTTP Path
+4. **Catalog**: The Unity Catalog name (e.g., `companies_data`)
 
-**Step 3: Test the Connection**
+**Test the connection:**
 
-```powershell
-python config/db_config.py
-```
-
-Expected output:
-```
-Database Configuration
-==================================================
-Database Type: databricks
-Host: your-workspace.cloud.databricks.com
-Catalog: your_catalog
-HTTP Path: /sql/1.0/warehouses/your-warehouse-id
-Token: ***xxxx
-
-✅ Configuration loaded successfully
-Schemas found: ['schema1', 'schema2', 'schema3']
-```
-
-**Step 4: Install Databricks Connector (if not already installed)**
-
-```powershell
-pip install databricks-sql-connector
-```
-
-#### Snowflake
-
-Set these environment variables:
-
-```powershell
-$env:DEBUG_AI_DB_TYPE = "snowflake"
-$env:SNOWFLAKE_ACCOUNT = "your-account"
-$env:SNOWFLAKE_USER = "your-username"
-$env:SNOWFLAKE_PASSWORD = "your-password"
-$env:SNOWFLAKE_WAREHOUSE = "your-warehouse"
-$env:SNOWFLAKE_DATABASE = "your-database"
-```
-
-**Note:** Snowflake connector needs to be implemented in `scripts/debug_engine.py`. Currently, the structure supports it but requires implementation.
-
-### Adding Custom Database Types
-
-To add support for a new database type:
-
-1. **Edit `config/db_config.py`:**
-   Add a new branch in the `get_db_config()` function:
-
-   ```python
-   elif DB_TYPE == 'your_database':
-       config['connection_details'] = {
-           'host': os.getenv('YOUR_DB_HOST'),
-           'port': os.getenv('YOUR_DB_PORT', '5432'),
-           'database': os.getenv('YOUR_DB_NAME'),
-           'user': os.getenv('YOUR_DB_USER'),
-           'password': os.getenv('YOUR_DB_PASSWORD'),
-       }
-   ```
-
-2. **Implement the connector in `scripts/debug_engine.py`:**
-   Update the `DatabaseConnector` class to handle your database type, implementing:
-   - Connection logic
-   - Query execution
-   - Schema/table discovery
-   - Column type detection
-
-3. **Set environment variable:**
-   ```powershell
-   $env:DEBUG_AI_DB_TYPE = "your_database"
-   ```
-
-### Environment Variables Reference
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `DEBUG_AI_DB_PATH` | Path to database file (DuckDB) | `C:\Data\warehouse.duckdb` |
-| `DEBUG_AI_ETL_DIR` | Path to SQL/ETL directory | `C:\Data\etl` |
-| `DEBUG_AI_DB_TYPE` | Database type | `duckdb`, `databricks`, `snowflake` |
-| `DATABRICKS_HOST` | Databricks workspace URL | `workspace.cloud.databricks.com` |
-| `DATABRICKS_TOKEN` | Databricks access token | `dapi...` |
-| `DATABRICKS_WAREHOUSE_ID` | Databricks SQL warehouse ID | `abc123...` |
-| `SNOWFLAKE_ACCOUNT` | Snowflake account identifier | `xy12345` |
-| `SNOWFLAKE_USER` | Snowflake username | `admin` |
-| `SNOWFLAKE_PASSWORD` | Snowflake password | `password123` |
-| `SNOWFLAKE_WAREHOUSE` | Snowflake warehouse name | `COMPUTE_WH` |
-| `SNOWFLAKE_DATABASE` | Snowflake database name | `PRODUCTION` |
-
----
-
-## 📋 CLI Commands
-
-| Command | What It Does |
-|---------|--------------|
-| `python scripts/cli.py init --db "..." --sql "..."` | Configure paths |
-| `python scripts/cli.py build` | Parse SQL → Create metadata |
-| `python scripts/cli.py scan` | Show tables & metadata status |
-| `python scripts/cli.py test` | Verify everything works |
-| `python scripts/cli.py query table column` | Quick lineage lookup |
-| `python scripts/cli.py serve` | Start MCP server manually |
-
-```
-
-1. **build** parses your SQL files and stores lineage in metadata tables
-2. **MCP server** exposes tools for AI to query that lineage
-3. **Cursor/Claude** uses those tools to answer your questions!
-
----
-
-## 🆘 Troubleshooting
-
-### "Python not found"
-→ Install Python from https://python.org
-→ Make sure to check "Add to PATH" during install
-
-### "No module named duckdb"
-→ Run: `pip install duckdb pandas mcp`
-
-### "Database not found"
-→ Check your path is correct
-→ Make sure the file exists
-→ Use full path like `C:\Users\...` not relative path
-
-### "0 tables found" after build
-→ Check your SQL files have `CREATE TABLE` or `CREATE OR REPLACE TABLE`
-→ Make sure SQL folder path is correct
-→ Check SQL files end with `.sql`
-
-### Cursor not connecting
-→ Did you restart Cursor after adding config?
-→ Check path uses double backslashes `\\`
-→ Try running `python mcp_server.py` manually to see errors
-
-### "No lineage found"
-→ Run `python scripts/cli.py build` first
-→ Run `python scripts/cli.py scan` and check metadata shows ✅
-
----
-
-## ✅ Success Checklist
-
-Before asking for help, verify:
-
-- [ ] Python works: `python --version`
-- [ ] Packages installed: `pip install duckdb pandas mcp`
-- [ ] Init done: `python scripts/cli.py init --db "..." --sql "..."`
-- [ ] Build done: `python scripts/cli.py build` shows tables found
-- [ ] Scan shows: `✅ table_lineage` and `✅ column_lineage`
-- [ ] Test passes: `python scripts/cli.py test` shows all ✅
-- [ ] Cursor config has correct path with `\\`
-- [ ] Cursor was restarted
-
----
-
-## 🎬 Complete Setup (Copy-Paste)
-
-```powershell
-# 1. Install packages
-pip install duckdb pandas mcp
-
-# 2. Initialize (CHANGE THESE PATHS!)
-python scripts/cli.py init --db "C:\YOUR\database.duckdb" --sql "C:\YOUR\sql_folder"
-
-# 3. Build metadata
-python scripts/cli.py build
-
-# 4. Verify
+```bash
 python scripts/cli.py scan
-python scripts/cli.py test
-
-# 5. Show path for Cursor config
-Write-Host "Add to Cursor settings:"
-Write-Host "mcp_server path: $((Get-Location).Path -replace '\\', '\\')\\mcp_server.py"
 ```
 
-Then add to Cursor settings and restart Cursor!
+This should list all schemas and tables in your catalog.
+
+> **Note:** With Databricks + Unity Catalog, lineage is tracked automatically from any query that runs — no need to run `build` manually.
 
 ---
 
-Made with ❤️ for Data Engineers
+## Project Structure
+
+```
+debug_ai/
+├── config/
+│   ├── config.yml          # Main configuration
+│   └── db_config.py        # Database config loader
+├── scripts/
+│   ├── cli.py              # Main CLI entry point
+│   ├── debug_engine.py     # Core lineage engine
+│   ├── build_metadata.py   # Builds lineage metadata from SQL files
+│   └── peer_review/        # Peer review system
+│       ├── peer_review.py      # Orchestrator
+│       ├── semantic_delta.py   # Git diff analyzer
+│       ├── blast_radius.py     # Downstream impact tracer
+│       └── technical_validator.py  # Syntax checker
+├── companies_data_duckdb/  # Sample DuckDB project
+│   ├── etl/                # SQL transformation files
+│   └── setup_raw.py        # Sample data generator
+├── mcp_server.py           # MCP server for AI tools
+└── requirements.txt        # Python dependencies
+```

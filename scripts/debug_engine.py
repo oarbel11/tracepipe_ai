@@ -614,6 +614,49 @@ class DebugEngine:
             logger.error(f"Error getting upstream tables: {e}")
             return []
 
+    def get_downstream_tables(self, source_table: str) -> List[str]:
+        """
+        📤 Get tables that depend on (are fed by) the source table.
+
+        Args:
+            source_table: Table to investigate
+
+        Returns:
+            List of downstream table names
+        """
+        validate_identifier(source_table, 'table')
+
+        # Use Databricks Unity Catalog if configured
+        if self.lineage_source == 'databricks' and self.db_type == 'databricks':
+            try:
+                df = self.connector.get_table_lineage()
+                if not df.empty:
+                    filtered = df[df['source_table'] == source_table]
+                    return filtered['target_table'].tolist()
+                return []
+            except Exception as e:
+                logger.warning(f"Unity Catalog lineage lookup failed: {e}")
+                return []
+        
+        # Otherwise use local metadata tables
+        meta_status = self._check_metadata_exists()
+        if not meta_status['table_lineage']:
+            logger.warning(f"Metadata table not found: {self.table_lineage_table}")
+            return []
+
+        query = f"""
+            SELECT DISTINCT target_table
+            FROM {self.table_lineage_table}
+            WHERE source_table = ?
+        """
+
+        try:
+            df = self.connector.execute(query, [source_table])
+            return df['target_table'].tolist()
+        except Exception as e:
+            logger.error(f"Error getting downstream tables: {e}")
+            return []
+
     def get_lineage_tree(self, target_table: str, max_depth: int = 5) -> Dict[str, Any]:
         """
         🌳 Get full lineage tree (recursive).
