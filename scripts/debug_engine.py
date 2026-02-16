@@ -236,6 +236,92 @@ class DatabricksConnector(DatabaseConnector):
         if self._connection:
             self._connection.close()
 
+    # ─────────────────────────────────────────────────────────────
+    # UNITY CATALOG LINEAGE METHODS
+    # ─────────────────────────────────────────────────────────────
+
+    def get_table_lineage(self, target_table: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get table lineage from Unity Catalog system tables.
+        
+        Args:
+            target_table: Optional filter for specific target table (format: schema.table)
+        
+        Returns:
+            DataFrame with columns: target_table, source_table
+        """
+        try:
+            if target_table:
+                schema, table = target_table.split('.') if '.' in target_table else ('', target_table)
+                query = f"""
+                    SELECT 
+                        CONCAT(target_table_catalog, '.', target_table_schema, '.', target_table_name) as target_table,
+                        CONCAT(source_table_catalog, '.', source_table_schema, '.', source_table_name) as source_table
+                    FROM system.access.table_lineage
+                    WHERE target_table_catalog = '{self.catalog}'
+                      AND target_table_schema = '{schema}'
+                      AND target_table_name = '{table}'
+                """
+            else:
+                query = f"""
+                    SELECT 
+                        CONCAT(target_table_catalog, '.', target_table_schema, '.', target_table_name) as target_table,
+                        CONCAT(source_table_catalog, '.', source_table_schema, '.', source_table_name) as source_table
+                    FROM system.access.table_lineage
+                    WHERE target_table_catalog = '{self.catalog}'
+                """
+            return self.execute(query)
+        except Exception as e:
+            logger.warning(f"Could not fetch table lineage from Unity Catalog: {e}")
+            return pd.DataFrame(columns=['target_table', 'source_table'])
+
+    def get_column_lineage(self, target_table: Optional[str] = None, target_column: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get column lineage from Unity Catalog system tables.
+        
+        Args:
+            target_table: Optional filter for target table (format: schema.table)
+            target_column: Optional filter for target column
+        
+        Returns:
+            DataFrame with column lineage information
+        """
+        try:
+            where_clauses = [f"target_table_catalog = '{self.catalog}'"]
+            
+            if target_table:
+                schema, table = target_table.split('.') if '.' in target_table else ('', target_table)
+                where_clauses.append(f"target_table_schema = '{schema}'")
+                where_clauses.append(f"target_table_name = '{table}'")
+            
+            if target_column:
+                where_clauses.append(f"target_column_name = '{target_column}'")
+            
+            where_sql = " AND ".join(where_clauses)
+            
+            query = f"""
+                SELECT 
+                    CONCAT(target_table_schema, '.', target_table_name) as target_table,
+                    target_column_name as target_column,
+                    CONCAT(source_table_schema, '.', source_table_name) as source_table,
+                    source_column_name as source_column
+                FROM system.access.column_lineage
+                WHERE {where_sql}
+            """
+            return self.execute(query)
+        except Exception as e:
+            logger.warning(f"Could not fetch column lineage from Unity Catalog: {e}")
+            return pd.DataFrame(columns=['target_table', 'target_column', 'source_table', 'source_column'])
+
+    def has_unity_catalog_lineage(self) -> bool:
+        """Check if Unity Catalog lineage is available."""
+        try:
+            query = "SELECT 1 FROM system.access.table_lineage LIMIT 1"
+            self.execute(query)
+            return True
+        except:
+            return False
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MAIN CLASS: Debug Engine
@@ -275,6 +361,7 @@ class DebugEngine:
         self,
         db_path: Optional[str] = None,
         db_type: Optional[str] = None,
+        lineage_source: Optional[str] = None,
         table_lineage_table: Optional[str] = None,
         column_lineage_table: Optional[str] = None
     ):
@@ -284,13 +371,15 @@ class DebugEngine:
         Args:
             db_path: Path to database (for duckdb). If None, reads from config.
             db_type: Database type. If None, reads from config.yml
+            lineage_source: Where to get lineage ('local', 'databricks', 'auto')
             table_lineage_table: Custom metadata table for table lineage
             column_lineage_table: Custom metadata table for column lineage
         """
         # Load from config if not provided
-        from config.db_config import get_db_type, get_duckdb_config, get_databricks_config
+        from config.db_config import get_db_type, get_duckdb_config, get_databricks_config, get_lineage_source
         
         self.db_type = db_type or get_db_type()
+        self.lineage_source = lineage_source or get_lineage_source()
         
         # Initialize connector based on type
         if self.db_type == 'duckdb':
@@ -307,11 +396,12 @@ class DebugEngine:
             self.connector = DatabricksConnector(config)
             self.db_path = f"databricks://{config['host']}"
             logger.info(f"DebugEngine initialized: Databricks at {config['host']}")
+            logger.info(f"Lineage source: {self.lineage_source}")
             
         else:
             raise NotImplementedError(f"Database type '{self.db_type}' not yet supported")
 
-        # Metadata table names
+        # Metadata table names (used for local lineage)
         self.table_lineage_table = table_lineage_table or self.DEFAULT_TABLE_LINEAGE
         self.column_lineage_table = column_lineage_table or self.DEFAULT_COLUMN_LINEAGE
 
@@ -397,27 +487,47 @@ class DebugEngine:
         validate_identifier(target_table, 'table')
         validate_identifier(target_column, 'column')
 
-        # Check metadata exists
-        meta_status = self._check_metadata_exists()
-        if not meta_status['column_lineage']:
-            return (
-                f"❌ Metadata table not found: {self.column_lineage_table}\n"
-                f"   Run build_metadata.py first to create lineage data."
-            )
+        df = None
+        
+        # Try Databricks Unity Catalog if configured
+        if self.lineage_source == 'databricks' and self.db_type == 'databricks':
+            try:
+                df = self.connector.get_column_lineage(target_table, target_column)
+                if df.empty:
+                    df = None
+            except Exception as e:
+                logger.warning(f"Unity Catalog column lineage lookup failed: {e}")
+                df = None
+        
+        # Fallback to local metadata tables
+        if df is None:
+            meta_status = self._check_metadata_exists()
+            if not meta_status['column_lineage']:
+                if self.lineage_source == 'databricks':
+                    return (
+                        f"❌ No lineage found for: {target_table}.{target_column}\n"
+                        f"\n"
+                        f"Unity Catalog lineage is empty or not available.\n"
+                        f"Make sure the table has been queried/created in a tracked job."
+                    )
+                return (
+                    f"❌ Metadata table not found: {self.column_lineage_table}\n"
+                    f"   Run build_metadata.py first to create lineage data."
+                )
 
-        # Query the metadata
-        query = f"""
-            SELECT *
-            FROM {self.column_lineage_table}
-            WHERE target_table = ? AND target_column = ?
-        """
+            # Query the local metadata
+            query = f"""
+                SELECT *
+                FROM {self.column_lineage_table}
+                WHERE target_table = ? AND target_column = ?
+            """
 
-        try:
-            df = self.connector.execute(query, [target_table, target_column])
-        except Exception as e:
-            return f"❌ Query error: {e}"
+            try:
+                df = self.connector.execute(query, [target_table, target_column])
+            except Exception as e:
+                return f"❌ Query error: {e}"
 
-        if df.empty:
+        if df is None or df.empty:
             return (
                 f"❌ No lineage found for: {target_table}.{target_column}\n"
                 f"\n"
@@ -430,12 +540,14 @@ class DebugEngine:
         # Build report (generic - works with any column structure)
         row = df.iloc[0]
 
+        source_info = f"Lineage source: {self.lineage_source}"
         report_lines = [
             "",
             "╔═══════════════════════════════════════════════════════════════╗",
             "║  🔍 COLUMN LINEAGE REPORT                                      ║",
             "╠═══════════════════════════════════════════════════════════════╣",
             f"║  📍 Target: {target_table}.{target_column}",
+            f"║  📊 Source: {source_info}",
             "║",
         ]
 
@@ -472,6 +584,18 @@ class DebugEngine:
         """
         validate_identifier(target_table, 'table')
 
+        # Use Databricks Unity Catalog if configured
+        if self.lineage_source == 'databricks' and self.db_type == 'databricks':
+            try:
+                df = self.connector.get_table_lineage(target_table)
+                if not df.empty:
+                    return df['source_table'].tolist()
+                return []
+            except Exception as e:
+                logger.warning(f"Unity Catalog lineage lookup failed: {e}")
+                return []
+        
+        # Otherwise use local metadata tables
         meta_status = self._check_metadata_exists()
         if not meta_status['table_lineage']:
             logger.warning(f"Metadata table not found: {self.table_lineage_table}")
@@ -488,6 +612,49 @@ class DebugEngine:
             return df['source_table'].tolist()
         except Exception as e:
             logger.error(f"Error getting upstream tables: {e}")
+            return []
+
+    def get_downstream_tables(self, source_table: str) -> List[str]:
+        """
+        📤 Get tables that depend on (are fed by) the source table.
+
+        Args:
+            source_table: Table to investigate
+
+        Returns:
+            List of downstream table names
+        """
+        validate_identifier(source_table, 'table')
+
+        # Use Databricks Unity Catalog if configured
+        if self.lineage_source == 'databricks' and self.db_type == 'databricks':
+            try:
+                df = self.connector.get_table_lineage()
+                if not df.empty:
+                    filtered = df[df['source_table'] == source_table]
+                    return filtered['target_table'].tolist()
+                return []
+            except Exception as e:
+                logger.warning(f"Unity Catalog lineage lookup failed: {e}")
+                return []
+        
+        # Otherwise use local metadata tables
+        meta_status = self._check_metadata_exists()
+        if not meta_status['table_lineage']:
+            logger.warning(f"Metadata table not found: {self.table_lineage_table}")
+            return []
+
+        query = f"""
+            SELECT DISTINCT target_table
+            FROM {self.table_lineage_table}
+            WHERE source_table = ?
+        """
+
+        try:
+            df = self.connector.execute(query, [source_table])
+            return df['target_table'].tolist()
+        except Exception as e:
+            logger.error(f"Error getting downstream tables: {e}")
             return []
 
     def get_lineage_tree(self, target_table: str, max_depth: int = 5) -> Dict[str, Any]:

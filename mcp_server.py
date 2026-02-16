@@ -483,6 +483,48 @@ def analyze_data_quality(table: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PEER REVIEW TOOLS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@mcp.tool()
+def peer_review(staged_only: bool = False) -> str:
+    """
+    🎓 Run Senior Peer Review on your SQL code changes.
+
+    Analyzes git changes and returns a full peer review report including:
+    - Syntax errors (typos, unmatched parentheses)
+    - Directly changed tables with descriptions of what changed
+    - Downstream impact chain (which tables depend on the changed ones)
+    - Risk level (GREEN / YELLOW / RED)
+
+    Use this when the user asks to:
+    - "peer review my changes"
+    - "check my code before committing"
+    - "what's the impact of my changes?"
+    - "review my SQL"
+
+    Args:
+        staged_only: If True, only review git-staged files.
+                     If False (default), review ALL modified files.
+
+    Returns:
+        Formatted peer review report with risk level and advisory.
+
+    Example:
+        peer_review()
+        → Full report showing changed tables, impact chain, and risk level
+    """
+    try:
+        from scripts.peer_review.peer_review import PeerReviewOrchestrator
+
+        orchestrator = PeerReviewOrchestrator()
+        advisory = orchestrator.review_changes(staged_only=staged_only)
+        return advisory.formatted_output
+    except Exception as e:
+        return f"❌ Peer review error: {e}"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MAIN ENTRY POINT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -517,6 +559,9 @@ if __name__ == "__main__":
     print('     • detect_duplicates  - Find duplicate rows')
     print('     • validate_business_rules - Check business logic')
     print('     • analyze_data_quality - Comprehensive quality analysis')
+    print()
+    print('   Peer Review:')
+    print('     • peer_review        - Review SQL changes for errors & impact')
     print()
     print('🚀 Starting server...')
     print('=' * 60)

@@ -1,4 +1,7 @@
 duckdb
 pandas
 mcp
+gitpython
+networkx
 databricks-sql-connector
+sqlparse
