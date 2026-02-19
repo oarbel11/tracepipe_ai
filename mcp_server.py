@@ -487,15 +487,42 @@ def analyze_data_quality(table: str) -> dict:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @mcp.tool()
+def peer_review_setup() -> str:
+    """
+    🔧 Build peer review business context (run once when installing the MCP).
+
+    Scans the project for ETL scripts (SQL, jobs, notebooks from config), builds
+    lineage, and saves a context file so that when the user runs peer review,
+    the agent can respond like a senior data engineer who knows the business.
+
+    Run this once after adding the MCP to your AI tool, or after adding new ETL.
+
+    Returns:
+        Success message with path to the saved context file.
+    """
+    try:
+        from scripts.peer_review.context_builder import build_peer_review_context
+        path = build_peer_review_context(repo_path=PROJECT_ROOT, run_build=True)
+        return (
+            f"Peer review context built successfully.\n"
+            f"Context saved to: {path}\n"
+            f"When the user saves changes and runs peer review, the agent will use this "
+            f"context and respond like a senior data engineer who knows the project."
+        )
+    except Exception as e:
+        return f"Peer review setup error: {e}"
+
+
+@mcp.tool()
 def peer_review(staged_only: bool = False) -> str:
     """
     🎓 Run Senior Peer Review on your SQL code changes.
 
     Analyzes git changes and returns a full peer review report including:
-    - Syntax errors (typos, unmatched parentheses)
-    - Directly changed tables with descriptions of what changed
-    - Downstream impact chain (which tables depend on the changed ones)
-    - Risk level (GREEN / YELLOW / RED)
+    - Senior data engineer notes (when context was built via peer_review_setup)
+    - What changed from → to, and which tables are impacted
+    - Syntax errors (typos, unknown schema, unmatched parentheses)
+    - Business / grain mismatch when grouping doesn't match downstream
 
     Use this when the user asks to:
     - "peer review my changes"
@@ -508,11 +535,11 @@ def peer_review(staged_only: bool = False) -> str:
                      If False (default), review ALL modified files.
 
     Returns:
-        Formatted peer review report with risk level and advisory.
+        Formatted peer review report (Senior DE notes, changes, impact, incorrect, business).
 
     Example:
         peer_review()
-        → Full report showing changed tables, impact chain, and risk level
+        → Full report with Senior DE thoughts and change impact
     """
     try:
         from scripts.peer_review.peer_review import PeerReviewOrchestrator
@@ -529,42 +556,66 @@ def peer_review(staged_only: bool = False) -> str:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 if __name__ == "__main__":
-    from config.db_config import DB_PATH
+    """
+    Start the MCP server and print a short config summary.
+
+    NOTE:
+        We intentionally **do not** import a hard-coded `DB_PATH` here.
+        All connection details are managed by `config/db_config.py`
+        and the `DebugEngine`, which read from `config.yml`.
+    """
+    from config.db_config import get_db_type, get_duckdb_config, get_databricks_config
+
+    db_type = get_db_type()
+
+    # Build a human-friendly database description
+    if db_type == "duckdb":
+        duck_conf = get_duckdb_config()
+        db_description = duck_conf.get("path", "(no path configured)")
+    elif db_type == "databricks":
+        dbc_conf = get_databricks_config()
+        host = dbc_conf.get("host", "unknown-host")
+        catalog = dbc_conf.get("catalog", "hive_metastore")
+        db_description = f"Databricks @ {host} (catalog={catalog})"
+    else:
+        db_description = f"(custom db_type={db_type})"
 
     print()
-    print('=' * 60)
-    print('🌐 DEBUG AI - MCP Server (Generic)')
-    print('=' * 60)
+    print("=" * 60)
+    print("🌐 DEBUG AI - MCP Server (Generic)")
+    print("=" * 60)
     print()
-    print(f'📁 Database: {DB_PATH}')
+    print(f"🗄️  DB Type: {db_type}")
+    print(f"📁 Database / Connection: {db_description}")
     print()
-    print('🔧 Available Tools:')
-    print('   Discovery:')
-    print('     • list_schemas       - Show available schemas')
-    print('     • list_tables        - Show available tables')
-    print('     • describe_table     - Show column info')
-    print('     • get_row_count      - Count rows in a table')
+    print("🔧 Available Tools:")
+    print("   Discovery:")
+    print("     • list_schemas       - Show available schemas")
+    print("     • list_tables        - Show available tables")
+    print("     • describe_table     - Show column info")
+    print("     • get_row_count      - Count rows in a table")
     print()
-    print('   Lineage:')
-    print('     • explain_column     - How is a column calculated?')
-    print('     • get_table_sources  - What feeds into this table?')
-    print('     • get_lineage_tree   - Full dependency tree')
+    print("   Lineage:")
+    print("     • explain_column     - How is a column calculated?")
+    print("     • get_table_sources  - What feeds into this table?")
+    print("     • get_lineage_tree   - Full dependency tree")
     print()
-    print('   Debugging:')
-    print('     • check_table_health - Debug data quality')
-    print('     • inspect_row        - Look at specific data')
-    print('     • run_query          - Custom SQL (read-only)')
+    print("   Debugging:")
+    print("     • check_table_health - Debug data quality")
+    print("     • inspect_row        - Look at specific data")
+    print("     • run_query          - Custom SQL (read-only)")
     print()
-    print('   Data Quality & Validation:')
-    print('     • detect_duplicates  - Find duplicate rows')
-    print('     • validate_business_rules - Check business logic')
-    print('     • analyze_data_quality - Comprehensive quality analysis')
+    print("   Data Quality & Validation:")
+    print("     • detect_duplicates  - Find duplicate rows")
+    print("     • validate_business_rules - Check business logic")
+    print("     • analyze_data_quality - Comprehensive quality analysis")
     print()
-    print('   Peer Review:')
-    print('     • peer_review        - Review SQL changes for errors & impact')
+    print("   Peer Review:")
+    print("     • peer_review_setup  - Build business context (run once when installing MCP)")
+    print("     • peer_review        - Review SQL changes for errors & impact")
     print()
-    print('🚀 Starting server...')
-    print('=' * 60)
+    print("🚀 Starting server...")
+    print("=" * 60)
     print()
 
     mcp.run()

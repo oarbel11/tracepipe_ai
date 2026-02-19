@@ -67,6 +67,9 @@ desktop.ini
 # ─────────────────────────────────────────────────────────────────
 # Config file (created by cli.py init - each user has their own)
 .debug_ai_config.json
+# Peer review / Make.com generated outputs
+peer_review_result.json
+make_apps_modules.json
 
 # Database files (users bring their own)
 *.duckdb
