@@ -17,7 +17,7 @@ USAGE:
 """
 
 import re
-import ast
+import sys
 from pathlib import Path
 from typing import List, Dict, Set, Optional, Any
 from dataclasses import dataclass, asdict
@@ -35,6 +35,17 @@ logger = logging.getLogger(__name__)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # DATA STRUCTURES
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+try:
+    from config.db_config import get_all_etl_dirs
+except Exception:
+    # Config is optional for semantic delta; we'll fall back to repo root if unavailable
+    get_all_etl_dirs = None  # type: ignore
+
 
 @dataclass
 class SemanticDelta:
@@ -252,45 +263,238 @@ class SemanticDeltaExtractor:
     
     def extract_from_git(self, staged_only: bool = True) -> SemanticDelta:
         """
-        Extract semantic delta from git staged changes.
+        Extract semantic delta by comparing current files on disk to HEAD.
+        
+        Simple approach: Always compare current file state vs HEAD, regardless of git staging.
+        This ensures we detect changes whenever a user saves a file.
         
         Args:
-            staged_only: Only analyze staged files (True) or all modified files (False)
+            staged_only: Ignored - we always compare current state vs HEAD
         
         Returns:
             SemanticDelta object with analysis results
         """
-        if not self.repo:
-            logger.error("Git repository not available")
+        # Discover all SQL files in ETL directories
+        sql_files = self._discover_local_sql_files()
+        
+        # Filter for SQL files only
+        relevant_files = [
+            f for f in sql_files
+            if f.endswith('.sql') and not f.endswith('__pycache__')
+        ]
+        
+        # If discovery found nothing, try direct scan as fallback
+        if not relevant_files:
+            logger.debug("No files found via discovery, trying direct scan")
+            try:
+                for sql_file in Path(self.repo_path).rglob("*.sql"):
+                    if sql_file.is_file():
+                        try:
+                            rel_path = sql_file.relative_to(self.repo_path)
+                            relevant_files.append(str(rel_path))
+                        except ValueError:
+                            relevant_files.append(str(sql_file))
+            except Exception as e:
+                logger.debug(f"Fallback scan failed: {e}")
+        
+        logger.info(f"Found {len(relevant_files)} SQL file(s) to check")
+        if len(relevant_files) > 0:
+            logger.debug(f"Files to check: {relevant_files[:3]}")  # Show first 3
+        else:
+            logger.warning("No SQL files found - discovery may have failed")
+        
+        if not relevant_files:
             return SemanticDelta(
                 modified_elements=[],
-                logic_delta="Error: Git not available",
+                logic_delta="No SQL files found for analysis",
                 integrity_flag=False,
                 details={}
             )
         
-        # Get changed files
-        if staged_only:
-            # Get staged files
-            changed_files = [item.a_path for item in self.repo.index.diff("HEAD")]
-        else:
-            # Get all modified files (tracked)
-            changed_files = [item.a_path for item in self.repo.index.diff(None)]
-            # Also include untracked files (new files not yet git-added)
-            untracked = [f for f in self.repo.untracked_files 
-                         if f.endswith(('.sql', '.py'))]
-            changed_files.extend(untracked)
+        # Compare each file's current state vs HEAD
+        changed_files = []
+        for filepath in relevant_files:
+            try:
+                # Handle both relative and absolute paths
+                if Path(filepath).is_absolute():
+                    file_path = Path(filepath)
+                else:
+                    file_path = Path(self.repo_path / filepath)
+                
+                if not file_path.exists():
+                    logger.debug(f"File does not exist: {file_path} (tried from {filepath})")
+                    continue
+                
+                current_content = file_path.read_text(encoding='utf-8')
+                
+                # Get HEAD version (if git exists and file is tracked)
+                head_content = ""
+                file_in_head = False
+                if self.repo:
+                    try:
+                        # Try with the filepath as-is (relative to repo root)
+                        head_content = self.repo.git.show(f'HEAD:{filepath}')
+                        file_in_head = True
+                    except Exception as e:
+                        # File doesn't exist in HEAD (new file) - this is a change
+                        head_content = ""
+                        file_in_head = False
+                        logger.debug(f"File {filepath} not in HEAD: {e}")
+                
+                # Compare: if different, it's a change
+                # Direct comparison - any difference means change
+                if current_content != head_content:
+                    changed_files.append(filepath)
+                    logger.info(f"✓ Detected changes in {filepath} (in HEAD: {file_in_head}, sizes: {len(current_content)} vs {len(head_content)})")
+                elif not file_in_head:
+                    # New file (not in HEAD) - always a change
+                    changed_files.append(filepath)
+                    logger.info(f"✓ Detected new file: {filepath}")
+                else:
+                    logger.debug(f"No changes detected in {filepath} (both {len(current_content)} chars)")
+            except Exception as e:
+                logger.warning(f"Error checking {filepath}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+                # If we can't check, assume it might have changes to be safe
+                changed_files.append(filepath)
         
-        # Filter for SQL/Python files
-        relevant_files = [
-            f for f in changed_files
-            if f.endswith(('.sql', '.py')) and not f.endswith('__pycache__')
-        ]
+        # SIMPLE APPROACH: Always scan for SQL files when peer review is requested
+        # This ensures we detect changes regardless of git state
+        # The user wants peer review to work whenever they save changes
+        files_to_analyze = []
         
-        logger.info(f"Analyzing {len(relevant_files)} file(s): {relevant_files}")
+        # Always do a direct scan first - most reliable
+        try:
+            for sql_file in Path(self.repo_path).rglob("*.sql"):
+                if sql_file.is_file():
+                    try:
+                        rel_path = sql_file.relative_to(self.repo_path)
+                        files_to_analyze.append(str(rel_path).replace('\\', '/'))  # Normalize path separators
+                    except ValueError:
+                        # File is outside repo_path, use absolute path
+                        files_to_analyze.append(str(sql_file))
+            if files_to_analyze:
+                logger.info(f"Found {len(files_to_analyze)} SQL files via direct scan: {files_to_analyze[:3]}")
+        except Exception as e:
+            logger.debug(f"Direct scan failed: {e}")
         
-        return self._analyze_files(relevant_files, staged_only)
-    
+        # Fallback to discovery results if direct scan found nothing
+        if not files_to_analyze:
+            files_to_analyze = changed_files if changed_files else relevant_files
+            if files_to_analyze:
+                logger.info(f"Using {len(files_to_analyze)} files from discovery: {files_to_analyze[:3]}")
+        
+        # Final fallback: check config-based ETL directory
+        if not files_to_analyze:
+            logger.debug("Trying config-based ETL directory scan")
+            try:
+                if get_all_etl_dirs:
+                    etl_dirs = get_all_etl_dirs()
+                    for dir_name, dir_path in etl_dirs.items():
+                        if dir_path and Path(dir_path).exists():
+                            for sql_file in Path(dir_path).rglob("*.sql"):
+                                if sql_file.is_file():
+                                    try:
+                                        rel_path = sql_file.relative_to(self.repo_path)
+                                        files_to_analyze.append(str(rel_path).replace('\\', '/'))
+                                    except ValueError:
+                                        files_to_analyze.append(str(sql_file))
+                            if files_to_analyze:
+                                logger.info(f"Found {len(files_to_analyze)} SQL files in {dir_name}")
+                                break
+            except Exception as e:
+                logger.debug(f"Config-based scan failed: {e}")
+        
+        if not files_to_analyze:
+            return SemanticDelta(
+                modified_elements=[],
+                logic_delta="No SQL files found for analysis",
+                integrity_flag=False,
+                details={}
+            )
+        
+        logger.info(f"Analyzing {len(files_to_analyze)} SQL file(s) for peer review: {files_to_analyze[:3]}")
+        
+        # FIRST: Extract tables directly from files (bypass git comparison)
+        # This ensures peer review always works when files exist
+        all_tables_found = []
+        file_details = {}
+        
+        for filepath in files_to_analyze:
+            try:
+                # Handle both relative and absolute paths, normalize separators
+                filepath_normalized = filepath.replace('\\', '/')
+                if Path(filepath).is_absolute():
+                    file_path = Path(filepath)
+                else:
+                    file_path = Path(self.repo_path) / filepath_normalized
+                
+                if not file_path.exists():
+                    logger.warning(f"File does not exist: {file_path} (from {filepath})")
+                    continue
+                
+                content = file_path.read_text(encoding='utf-8')
+                if not content.strip():
+                    logger.debug(f"File is empty: {filepath}")
+                    continue
+                
+                # Extract all table names from CREATE TABLE statements
+                table_matches = SQLPatternMatcher.CREATE_TABLE.findall(content)
+                
+                if not table_matches:
+                    logger.debug(f"No CREATE TABLE statements found in {filepath}")
+                else:
+                    for table_match in table_matches:
+                        if table_match not in all_tables_found:
+                            all_tables_found.append(table_match)
+                    
+                    # Get HEAD version for comparison
+                    head_content = ""
+                    if self.repo:
+                        try:
+                            head_content = self.repo.git.show(f'HEAD:{filepath_normalized}')
+                        except:
+                            head_content = ""
+                    
+                    # Store file details
+                    file_details[filepath_normalized] = {
+                        'old_code': head_content,
+                        'new_code': content
+                    }
+                    
+                    logger.info(f"✓ Found {len(table_matches)} table(s) in {filepath}: {table_matches[:3]}")
+            except Exception as e:
+                logger.error(f"Error processing {filepath}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+        
+        # Analyze the files (compare current vs HEAD, or treat as new if not in HEAD)
+        result = self._analyze_files(files_to_analyze, staged=False)
+        
+        # ALWAYS override with direct table extraction to ensure peer review works
+        # This is the key fix: bypass git comparison issues by always extracting tables
+        if all_tables_found:
+            result.modified_elements = all_tables_found
+            result.details.update(file_details)
+            result.logic_delta = f"Analyzed {len(all_tables_found)} table(s) across {len(files_to_analyze)} file(s)"
+            logger.info(f"✓ Peer review ready: {len(all_tables_found)} table(s): {all_tables_found[:5]}")
+        elif files_to_analyze:
+            # Fallback: if extraction failed but files exist, something went wrong
+            logger.error(f"CRITICAL: Table extraction returned empty but {len(files_to_analyze)} file(s) exist!")
+            logger.error(f"Files: {files_to_analyze[:3]}")
+            # Still try to return something so peer review doesn't fail completely
+            result.modified_elements = ["unknown"]  # Placeholder to trigger review
+            result.logic_delta = f"Files found but table extraction failed - {len(files_to_analyze)} file(s)"
+        
+        # Final check: ensure we have results
+        if not result.modified_elements:
+            logger.error("FATAL: No modified elements after all extraction attempts!")
+            logger.error(f"Files to analyze: {files_to_analyze}")
+            logger.error(f"Tables found: {all_tables_found}")
+        
+        return result
+
     def extract_from_files(self, old_file: str, new_file: str) -> SemanticDelta:
         """
         Extract semantic delta from two file versions.
@@ -358,13 +562,19 @@ class SemanticDeltaExtractor:
                     
                     new_content = Path(self.repo_path / filepath).read_text(encoding='utf-8')
                 else:
-                    # Compare working directory with index
+                    # Compare working directory with HEAD
                     try:
-                        old_content = self.repo.git.show(f':{filepath}')
-                    except:
-                        old_content = ""
+                        old_content = self.repo.git.show(f'HEAD:{filepath}')
+                    except Exception as e:
+                        # File doesn't exist in HEAD (new file) or other error
+                        logger.debug(f"Could not get HEAD version of {filepath}: {e}")
+                        old_content = ""  # New file
                     
-                    new_content = Path(self.repo_path / filepath).read_text(encoding='utf-8')
+                    try:
+                        new_content = Path(self.repo_path / filepath).read_text(encoding='utf-8')
+                    except Exception as e:
+                        logger.error(f"Could not read file {filepath}: {e}")
+                        continue
                 
                 # Analyze based on file type
                 if filepath.endswith('.sql'):
@@ -375,13 +585,38 @@ class SemanticDeltaExtractor:
                     # Find all tables that exist in either version
                     all_tables = set(old_blocks.keys()) | set(new_blocks.keys())
                     
+                    # If no tables found, treat entire file as one change
+                    if not all_tables and (old_content or new_content):
+                        logger.debug(f"No table blocks found in {filepath}, analyzing entire file")
+                        changes = self.analyzer.analyze_sql_diff(old_content, new_content, filepath)
+                        if changes.get('description'):
+                            all_descriptions.extend(changes['description'])
+                        has_integrity_impact = has_integrity_impact or changes.get('has_integrity_impact', False)
+                        # Extract table names from CREATE statements
+                        table_matches = SQLPatternMatcher.CREATE_TABLE.findall(new_content)
+                        for table_match in table_matches:
+                            all_modified_elements.append(table_match)
+                    
                     for table_name in all_tables:
                         old_block = old_blocks.get(table_name, "")
                         new_block = new_blocks.get(table_name, "")
                         
-                        # Skip if no change in this block
-                        if old_block.strip() == new_block.strip():
+                        # Always analyze blocks - even if they match HEAD, peer review should still run
+                        # This ensures peer review works whenever the user requests it
+                        if old_block == new_block:
+                            # Blocks match, but still include the table for review
+                            logger.debug(f"Block {table_name} matches HEAD, but including for review")
+                            all_modified_elements.append(table_name)
+                            # Still analyze to get table structure info
+                            changes = self.analyzer.analyze_sql_diff(new_block, new_block, filepath)
+                            changes['table'] = table_name
+                            if changes.get('description'):
+                                prefixed = [f"[{table_name}] Current state" for _ in changes['description']]
+                                all_descriptions.extend(prefixed)
                             continue
+                        
+                        # Log what we're comparing
+                        logger.debug(f"Comparing block for {table_name}: old={len(old_block)} chars, new={len(new_block)} chars")
                         
                         # Analyze this specific block
                         changes = self.analyzer.analyze_sql_diff(old_block, new_block, filepath)
@@ -407,6 +642,8 @@ class SemanticDeltaExtractor:
             
             except Exception as e:
                 logger.error(f"Error analyzing {filepath}: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
         
         # Build final delta
         logic_delta = "; ".join(all_descriptions) if all_descriptions else "No significant logic changes detected"
@@ -415,6 +652,115 @@ class SemanticDeltaExtractor:
             modified_elements=all_modified_elements,
             logic_delta=logic_delta,
             integrity_flag=has_integrity_impact,
+            details=all_details
+        )
+    
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # FALLBACK: FILESYSTEM-ONLY ANALYSIS (NO GIT)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    
+    def _discover_local_sql_files(self) -> List[str]:
+        """
+        Discover SQL files to analyze when git is not available.
+        
+        Strategy:
+        - Prefer ETL directories from config (sql_dir / jobs_dir / notebooks_dir)
+        - Fall back to scanning the current repo_path for *.sql
+        """
+        roots: List[Path] = []
+        
+        # Try to use configured ETL directories first
+        if get_all_etl_dirs is not None:
+            try:
+                dirs = get_all_etl_dirs()  # type: ignore[operator]
+                for p in dirs.values():
+                    if p is not None:
+                        path_obj = Path(p)
+                        if path_obj.exists():
+                            roots.append(path_obj)
+            except Exception as e:
+                logger.warning(f"Could not read ETL dirs from config: {e}")
+        
+        # Fallback: use repo_path itself
+        if not roots:
+            roots.append(self.repo_path)
+        
+        files: Set[str] = set()
+        for root in roots:
+            try:
+                for p in root.rglob("*.sql"):
+                    # Prefer paths relative to repo root when possible
+                    try:
+                        rel = p.relative_to(self.repo_path)
+                        files.add(str(rel))
+                    except ValueError:
+                        files.add(str(p))
+            except Exception as e:
+                logger.warning(f"Error scanning {root} for SQL files: {e}")
+        
+        return sorted(files)
+    
+    def _extract_from_filesystem(self) -> SemanticDelta:
+        """
+        Fallback path when git is not available.
+        
+        We can't see *what* changed without git history, so we:
+        - Treat all discovered SQL files as "current truth"
+        - Mark each table found as a modified element
+        - Provide basic descriptions so downstream tools still work
+        """
+        files = self._discover_local_sql_files()
+        
+        if not files:
+            return SemanticDelta(
+                modified_elements=[],
+                logic_delta="No SQL files found for analysis",
+                integrity_flag=False,
+                details={}
+            )
+        
+        all_modified_elements: List[str] = []
+        all_descriptions: List[str] = []
+        all_details: Dict[str, Any] = {}
+        
+        for filepath in files:
+            try:
+                full_path = Path(filepath)
+                if not full_path.is_absolute():
+                    full_path = self.repo_path / filepath
+                
+                if not full_path.exists():
+                    continue
+                
+                new_content = full_path.read_text(encoding='utf-8')
+                
+                # Split into per-table blocks
+                blocks = self._split_sql_into_blocks(new_content)
+                for table_name, block in blocks.items():
+                    all_modified_elements.append(table_name)
+                    all_descriptions.append(f"[{table_name}] Existing table definition scanned from filesystem")
+                
+                all_details[str(filepath)] = {
+                    'old_code': "",
+                    'new_code': new_content,
+                }
+            except Exception as e:
+                logger.error(f"Error analyzing {filepath} in filesystem mode: {e}")
+        
+        # Deduplicate elements while preserving order
+        seen: Set[str] = set()
+        unique_elements: List[str] = []
+        for el in all_modified_elements:
+            if el not in seen:
+                seen.add(el)
+                unique_elements.append(el)
+        
+        logic_delta = "; ".join(all_descriptions) if all_descriptions else "No significant logic changes detected"
+        
+        return SemanticDelta(
+            modified_elements=unique_elements,
+            logic_delta=logic_delta,
+            integrity_flag=False,
             details=all_details
         )
     

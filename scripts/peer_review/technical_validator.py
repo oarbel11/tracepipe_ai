@@ -22,7 +22,6 @@ import re
 from pathlib import Path
 from typing import List, Dict, Set, Optional, Any
 from dataclasses import dataclass, asdict
-from collections import defaultdict
 import logging
 
 # Add project root to path
@@ -30,7 +29,6 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.debug_engine import DebugEngine
-from config.db_config import load_config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -612,6 +610,8 @@ class TechnicalValidator:
         6. Aggregation without GROUP BY
         7. Trailing comma before FROM/WHERE/GROUP BY
         8. Duplicate column aliases
+        9. SELECT column not in GROUP BY (ambiguous grain)
+        10. Misleading alias (e.g. SUM(...) AS avg_salary)
         
         Returns:
             List of error messages (empty if valid)
@@ -624,17 +624,16 @@ class TechnicalValidator:
         sql_upper = sql_code.upper()
         
         # ── 1. Unknown schema names ──
-        # Get known schemas from database
-        known_schemas = set()
+        # Get known schemas from database; fallback so we don't flood when DB is disconnected or uses catalog names
+        known_schemas = {'raw', 'silver', 'conformed', 'gold', 'main', 'meta', 'companies_data', 'dbo'}
         if self.engine:
             try:
                 for s in self.engine.list_schemas():
                     known_schemas.add(s.lower())
-            except:
+            except Exception:
                 pass
         
         if known_schemas:
-            # Find schema references in CREATE TABLE schema.table and FROM/JOIN schema.table
             schema_pattern = re.compile(
                 r'(?:CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+|FROM\s+|JOIN\s+)(\w+)\.(\w+)',
                 re.IGNORECASE
@@ -642,10 +641,8 @@ class TechnicalValidator:
             for match in schema_pattern.finditer(sql_code):
                 schema_name = match.group(1).lower()
                 if schema_name not in known_schemas:
-                    # Find line number
                     pos = match.start()
                     line_num = sql_code[:pos].count('\n') + 1
-                    # Suggest closest match
                     suggestion = self._suggest_closest(schema_name, known_schemas)
                     msg = f"Unknown schema '{schema_name}' at line {line_num}"
                     if suggestion:
@@ -759,6 +756,82 @@ class TechnicalValidator:
                     break
                 aliases.append(alias)
         
+        # ── 9. SELECT / GROUP BY column mismatch ──
+        # Non-aggregated columns in SELECT must appear in GROUP BY (main query only, not subqueries)
+        for block in create_blocks:
+            block_upper = block.upper()
+            if 'GROUP BY' not in block_upper or 'SELECT' not in block_upper:
+                continue
+            # Only consider GROUP BY at top level (main query), not inside subqueries
+            depth = 0
+            main_gb_start = None
+            for i in range(len(block) - 8):
+                if block[i] == '(':
+                    depth += 1
+                elif block[i] == ')':
+                    depth -= 1
+                elif depth == 0 and i + 9 <= len(block) and block_upper[i:i+9].startswith('GROUP BY'):
+                    main_gb_start = i
+                    break
+            if main_gb_start is None:
+                continue
+            gb_match = re.match(r'\s*GROUP\s+BY\s+([a-zA-Z0-9_,.\s]+?)(?=\s*[;)]|\s+ORDER|\s+HAVING|\Z)', block[main_gb_start:], re.IGNORECASE | re.DOTALL)
+            if not gb_match:
+                continue
+            gb_cols = {c.strip().split('.')[-1].upper() for c in gb_match.group(1).split(',')}
+            # Main SELECT is the one right after "AS " (CREATE TABLE x AS SELECT ...)
+            select_match = re.search(r'\bAS\s+SELECT\s+(.*?)\s+FROM\s+', block, re.IGNORECASE | re.DOTALL)
+            if not select_match:
+                continue
+            select_body = select_match.group(1)
+            # Split SELECT list by comma, respecting nested parens
+            depth = 0
+            start = 0
+            select_parts = []
+            for i, ch in enumerate(select_body + ','):
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                elif ch == ',' and depth == 0:
+                    select_parts.append(select_body[start:i].strip())
+                    start = i + 1
+            for part in select_parts:
+                part_upper = part.upper()
+                if any(agg + '(' in part_upper for agg in ['SUM', 'AVG', 'COUNT', 'MAX', 'MIN']):
+                    continue
+                # Bare column or table.column — last identifier is the column name
+                col_match = re.search(r'(?:^|[\s,])([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)\s*(?:\s+AS\s+|\s*$)', part, re.IGNORECASE)
+                if col_match:
+                    col = col_match.group(1).split('.')[-1].upper()
+                    if col not in gb_cols:
+                        line_num = (block[:block.find(part)]).count('\n') + 1
+                        errors.append(
+                            f"SELECT column '{col_match.group(1).strip()}' not in GROUP BY (grouped by: {', '.join(sorted(gb_cols))}) — ambiguous or invalid"
+                        )
+                        break
+        
+        # ── 10. Misleading alias (e.g. sum(...) AS avg_salary or avg(...) AS total_salary) ──
+        for block in create_blocks:
+            # sum(...) as avg_salary / avg_salary / average_*
+            m = re.search(r'\bSUM\s*\([^)]+\)\s+AS\s+(\w+)', block, re.IGNORECASE)
+            if m:
+                alias = m.group(1).lower()
+                if 'avg' in alias or 'average' in alias:
+                    line_num = (block[:m.start()]).count('\n') + 1
+                    errors.append(
+                        f"Misleading alias at line {line_num}: SUM(...) AS {m.group(1)} — column is a total, not an average; rename e.g. to total_salary"
+                    )
+            # avg(...) as total_* / sum_*
+            m = re.search(r'\bAVG\s*\([^)]+\)\s+AS\s+(\w+)', block, re.IGNORECASE)
+            if m:
+                alias = m.group(1).lower()
+                if 'total' in alias or 'sum' in alias:
+                    line_num = (block[:m.start()]).count('\n') + 1
+                    errors.append(
+                        f"Misleading alias at line {line_num}: AVG(...) AS {m.group(1)} — column is an average, not a total; rename e.g. to avg_salary"
+                    )
+        
         return errors
     
     @staticmethod
@@ -781,38 +854,13 @@ class TechnicalValidator:
 
 if __name__ == '__main__':
     import json
-    
-    # Test with sample SQL
-    old_sql = """
-    CREATE TABLE silver.orders AS
-    SELECT
-        order_id,
-        customer_id,
-        total_amount,
-        status
-    FROM raw.orders
-    WHERE status = 'active'
-    """
-    
-    new_sql = """
-    CREATE TABLE silver.orders AS
-    SELECT
-        order_id,
-        customer_id::STRING as customer_id,
-        total_amount * 1.1 as total_amount
-    FROM raw.orders
-    CROSS JOIN raw.products
-    """
-    
+    old_sql = """CREATE TABLE silver.orders AS SELECT order_id, customer_id, total_amount FROM raw.orders WHERE status = 'active';"""
+    new_sql = """CREATE TABLE silver.orders AS SELECT order_id, customer_id::STRING as customer_id FROM raw.orders CROSS JOIN raw.products;"""
     validator = TechnicalValidator()
     report = validator.validate(
-        modified_elements=['silver.orders.customer_id', 'silver.orders.total_amount'],
+        modified_elements=['silver.orders.customer_id'],
         impacted_nodes=['gold.revenue_report'],
         old_code=old_sql,
         new_code=new_sql
     )
-    
-    print("\n" + "="*70)
-    print("TECHNICAL VALIDATION RESULTS")
-    print("="*70)
     print(json.dumps(report.to_dict(), indent=2))

@@ -1,18 +1,18 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║                    BLAST RADIUS MAPPER                           ║
+║                    IMPACT ANALYSIS MAPPER                        ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 Maps downstream impact of code changes using lineage metadata.
 
 USAGE:
-    from peer_review.blast_radius import BlastRadiusMapper
+    from peer_review.impact_analysis import ImpactAnalysisMapper
     from peer_review.semantic_delta import SemanticDeltaExtractor
     
     extractor = SemanticDeltaExtractor()
     delta = extractor.extract_from_git()
     
-    mapper = BlastRadiusMapper()
+    mapper = ImpactAnalysisMapper()
     impact = mapper.map_impact(delta.modified_elements)
     
     for node in impact.impacted_nodes:
@@ -62,8 +62,8 @@ class ImpactedNode:
 
 
 @dataclass
-class BlastRadius:
-    """Result of blast radius analysis."""
+class ImpactAnalysis:
+    """Result of downstream impact analysis."""
     impacted_nodes: List[Dict[str, Any]]
     total_impact: int
     leaf_nodes: List[str]  # Reports, dashboards, final aggregates
@@ -76,10 +76,10 @@ class BlastRadius:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# BLAST RADIUS MAPPER
+# IMPACT ANALYSIS MAPPER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class BlastRadiusMapper:
+class ImpactAnalysisMapper:
     """
     Maps downstream impact of code changes using lineage metadata.
     
@@ -96,7 +96,7 @@ class BlastRadiusMapper:
         self.engine = debug_engine
         if not self.engine:
             try:
-                config = get_db_config()
+                config = load_config()
                 self.engine = DebugEngine(config=config)
             except Exception as e:
                 logger.error(f"Could not initialize DebugEngine: {e}")
@@ -106,7 +106,7 @@ class BlastRadiusMapper:
         if nx:
             self.graph = nx.DiGraph()
     
-    def map_impact(self, modified_elements: List[str], max_depth: int = 10) -> BlastRadius:
+    def map_impact(self, modified_elements: List[str], max_depth: int = 10) -> ImpactAnalysis:
         """
         Map the downstream impact of modified elements.
         
@@ -115,7 +115,7 @@ class BlastRadiusMapper:
             max_depth: Maximum depth to traverse
         
         Returns:
-            BlastRadius object with impact analysis
+            ImpactAnalysis object with impact details
         """
         if not self.engine:
             logger.error("DebugEngine not available")
@@ -129,7 +129,7 @@ class BlastRadiusMapper:
         
         # Extract unique tables from modified elements
         tables = self._extract_tables(modified_elements)
-        logger.info(f"Analyzing blast radius for tables: {tables}")
+        logger.info(f"Analyzing downstream impact for tables: {tables}")
         
         # Build dependency graph
         all_impacted = set()
@@ -168,7 +168,7 @@ class BlastRadiusMapper:
         for node in impacted_nodes:
             criticality_breakdown[node['criticality']] += 1
         
-        return BlastRadius(
+        return ImpactAnalysis(
             impacted_nodes=impacted_nodes,
             total_impact=len(all_impacted),
             leaf_nodes=leaf_nodes,
@@ -367,7 +367,7 @@ if __name__ == '__main__':
     import json
     
     # Test with sample data
-    mapper = BlastRadiusMapper()
+    mapper = ImpactAnalysisMapper()
     
     # Example: a Silver layer table was modified
     modified_elements = ['silver.orders']
@@ -375,6 +375,6 @@ if __name__ == '__main__':
     impact = mapper.map_impact(modified_elements)
     
     print("\n" + "="*70)
-    print("BLAST RADIUS MAPPING RESULTS")
+    print("IMPACT ANALYSIS RESULTS")
     print("="*70)
     print(json.dumps(impact.to_dict(), indent=2))

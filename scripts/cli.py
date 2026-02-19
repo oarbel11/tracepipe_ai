@@ -553,6 +553,30 @@ def cmd_peer_review_uninstall_hook(args):
     print()
 
 
+def cmd_peer_review_setup(args):
+    """Build peer review business context (ETL discovery + lineage). Run once when installing MCP."""
+    print()
+    print("=" * 70)
+    print("  Peer Review Setup – Building business context")
+    print("=" * 70)
+    print()
+    try:
+        from scripts.peer_review.context_builder import build_peer_review_context
+        repo = getattr(args, 'repo', None) or str(PROJECT_ROOT)
+        path = build_peer_review_context(repo_path=repo, run_build=True)
+        print(f"  ETL files and table business logic saved to: {path}")
+        print()
+        print("  When you run peer review (or save changes and ask the agent to review),")
+        print("  the agent will use this context and respond like a senior data engineer")
+        print("  who knows your project.")
+        print()
+    except Exception as e:
+        print(f"  Error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
 def cmd_peer_review_config(args):
     """Configure peer review settings."""
     config_file = PROJECT_ROOT / 'config' / 'config.yml'
@@ -647,6 +671,9 @@ Examples:
     # TEST command
     test_parser = subparsers.add_parser('test', help='Run all tests')
     
+    # SETUP command
+    setup_parser = subparsers.add_parser('setup', help='Run interactive setup wizard')
+    
     # PEER-REVIEW command
     pr_parser = subparsers.add_parser('peer-review', help='Senior peer review for code changes')
     pr_subparsers = pr_parser.add_subparsers(dest='pr_command', help='Peer review sub-commands')
@@ -657,6 +684,10 @@ Examples:
     pr_check.add_argument('--output', '-o', help='Save detailed report to JSON file')
     pr_check.add_argument('--block', action='store_true', help='Exit with error on RED risk (for git hooks)')
     pr_check.add_argument('--repo', help='Path to git repository (default: current dir)')
+    
+    # peer-review setup
+    pr_setup = pr_subparsers.add_parser('setup', help='Build business context (run once when installing MCP)')
+    pr_setup.add_argument('--repo', help='Repository path (default: current dir)')
     
     # peer-review install-hook
     pr_install = pr_subparsers.add_parser('install-hook', help='Install git pre-commit hook')
@@ -684,9 +715,14 @@ Examples:
         cmd_serve(args)
     elif args.command == 'test':
         cmd_test(args)
+    elif args.command == 'setup':
+        import subprocess
+        subprocess.run([sys.executable, str(SCRIPTS_DIR / 'setup_wizard.py')])
     elif args.command == 'peer-review':
         if args.pr_command == 'check':
             cmd_peer_review(args)
+        elif args.pr_command == 'setup':
+            cmd_peer_review_setup(args)
         elif args.pr_command == 'install-hook':
             cmd_peer_review_install_hook(args)
         elif args.pr_command == 'uninstall-hook':

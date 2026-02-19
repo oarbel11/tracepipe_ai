@@ -17,7 +17,7 @@ USAGE:
 import re
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Set, Tuple
+from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, asdict
 import logging
 
@@ -26,7 +26,6 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.peer_review.semantic_delta import SemanticDeltaExtractor, SQLPatternMatcher
-from scripts.peer_review.blast_radius import BlastRadiusMapper
 from scripts.peer_review.technical_validator import TechnicalValidator
 from scripts.debug_engine import DebugEngine
 
@@ -89,9 +88,7 @@ class PeerReviewOrchestrator:
             logger.warning(f"Could not initialize DebugEngine: {e}")
             self.debug_engine = None
         
-        # Initialize components
         self.delta_extractor = SemanticDeltaExtractor(repo_path)
-        self.blast_mapper = BlastRadiusMapper(self.debug_engine)
         self.technical_validator = TechnicalValidator(self.debug_engine)
 
     def review_changes(self, staged_only: bool = False) -> CommitAdvisory:
@@ -139,15 +136,58 @@ class PeerReviewOrchestrator:
         risk_level = self._calculate_risk(syntax_errors, changed_tables, impact_chains)
         advisory_msg = self._get_advisory_message(risk_level)
         
-        # Step 6: Format output
-        formatted = self._format_output(
-            risk_level=risk_level,
-            advisory=advisory_msg,
-            files=list(delta.details.keys()),
+        # Build table -> file, per-table "from" summary, and all_blocks (for downstream grain lookup)
+        table_to_file: Dict[str, str] = {}
+        table_old_summary: Dict[str, str] = {}
+        all_blocks: Dict[str, str] = {}
+        for filepath, details in delta.details.items():
+            if not isinstance(details, dict) or 'new_code' not in details:
+                continue
+            old_code_f = details.get('old_code', '')
+            new_code_f = details.get('new_code', '')
+            old_blocks = self._split_sql_into_blocks(old_code_f)
+            new_blocks = self._split_sql_into_blocks(new_code_f)
+            all_blocks.update(new_blocks)
+            for table, block in new_blocks.items():
+                table_to_file[table] = filepath
+                table_old_summary[table] = self._old_behavior_summary(old_blocks.get(table, ''))
+        
+        # Business: grain mismatch — e.g. grouping by employee while downstream is company-level (senior DE concern)
+        # Only flag when both are entity-level grains (company, employee, department) and they differ
+        entity_grains = {"company", "employee", "department"}
+        grain_mismatch_notes: List[Tuple[str, str, str, str, str, str]] = []
+        for table in changed_tables:
+            new_block = all_blocks.get(table)
+            if not new_block:
+                continue
+            new_grain, new_group_by_str = self._infer_grain_and_group_by(new_block, table)
+            if not new_grain or new_grain not in entity_grains:
+                continue
+            for downstream_table, _ in impact_chains.get(table, []):
+                down_block = all_blocks.get(downstream_table)
+                if not down_block:
+                    continue
+                down_grain, down_group_by_str = self._infer_grain_and_group_by(down_block, downstream_table)
+                if not down_grain or down_grain == new_grain or down_grain not in entity_grains:
+                    continue
+                grain_mismatch_notes.append((
+                    table, downstream_table, new_grain, down_grain,
+                    new_group_by_str or "(inferred)", down_group_by_str or "(inferred)"
+                ))
+        
+        # Load business context if available (built by peer-review setup)
+        business_context = self._load_peer_review_context()
+        
+        # Step 6: Format clear report (from→to, impact, incorrect, business, Senior DE thoughts)
+        formatted = self._format_clear_report(
             syntax_errors=syntax_errors,
             changed_tables=changed_tables,
             table_descriptions=table_descriptions,
-            impact_chains=impact_chains
+            table_old_summary=table_old_summary,
+            table_to_file=table_to_file,
+            impact_chains=impact_chains,
+            grain_mismatch_notes=grain_mismatch_notes,
+            business_context=business_context,
         )
         
         return CommitAdvisory(
@@ -164,6 +204,18 @@ class PeerReviewOrchestrator:
         )
 
     # ─── Helper methods ─────────────────────────────────────────────
+
+    def _load_peer_review_context(self) -> Optional[Dict[str, Any]]:
+        """Load business context from config/peer_review_context.json if present."""
+        try:
+            base = Path(self.delta_extractor.repo_path) if self.delta_extractor.repo_path else Path(PROJECT_ROOT)
+            ctx_path = base / "config" / "peer_review_context.json"
+            if ctx_path.exists():
+                import json
+                return json.loads(ctx_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return None
 
     def _get_code_samples(self, delta) -> Tuple[str, str]:
         """Get combined old and new code from ALL files in the delta."""
@@ -200,6 +252,89 @@ class PeerReviewOrchestrator:
                     pass
         
         return '\n'.join(all_old), '\n'.join(all_new)
+
+    def _old_behavior_summary(self, old_block: str) -> str:
+        """One-line summary of old block for 'from' in report."""
+        if not (old_block or old_block.strip()):
+            return "(none)"
+        # Strip line comments so we don't capture comment text as WHERE clause
+        block_no_comments = re.sub(r"--[^\n]*", "", old_block)
+        u = block_no_comments.upper()
+        parts = []
+        if "WHERE" in u:
+            m = re.search(r"WHERE\s+(.+?)(?:GROUP|ORDER|LIMIT|;|\Z)", block_no_comments, re.IGNORECASE | re.DOTALL)
+            raw = (m.group(1).strip() if m else "")[:60]
+            if raw:
+                parts.append("WHERE " + (raw + "..." if len(raw) >= 60 else raw))
+            else:
+                parts.append("WHERE (clause present)")
+        else:
+            parts.append("no WHERE")
+        joins = len(re.findall(r"\bJOIN\b", block_no_comments, re.IGNORECASE))
+        lefts = len(re.findall(r"\bLEFT\s+JOIN\b", block_no_comments, re.IGNORECASE))
+        if lefts:
+            parts.append(f"{lefts} LEFT JOIN(s), {joins - lefts} other JOIN(s)")
+        elif joins:
+            parts.append(f"{joins} JOIN(s)")
+        if "GROUP BY" in u:
+            parts.append("GROUP BY")
+        return "; ".join(parts) if parts else "logic defined"
+
+    def _extract_group_by_columns(self, block: str) -> List[str]:
+        """Extract GROUP BY column list (normalized: last token if dotted)."""
+        if not block or "GROUP BY" not in block.upper():
+            return []
+        m = re.search(
+            r"\bGROUP\s+BY\s+([a-zA-Z0-9_,.\s]+?)(?=\s*HAVING|\s*ORDER|\s*LIMIT|;|\Z)",
+            block, re.IGNORECASE | re.DOTALL
+        )
+        if not m:
+            return []
+        raw = m.group(1).strip()
+        cols = []
+        for part in re.split(r"\s*,\s*", raw):
+            part = part.strip()
+            if not part:
+                continue
+            # e.g. e.emp_id or company_name -> take last token
+            tokens = re.split(r"\s*\.\s*", part)
+            cols.append(tokens[-1].lower() if tokens else part.lower())
+        return cols
+
+    def _infer_grain_and_group_by(self, block: str, table_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Infer grain from GROUP BY columns and table name. Senior-data-engineer semantics.
+        Returns (grain, group_by_summary) or (None, None) if unclear.
+        """
+        cols = self._extract_group_by_columns(block)
+        col_str = " ".join(cols)
+        table_lower = table_name.lower()
+        grain = None
+        # Column-based inference (GROUP BY drives grain)
+        if any(x in cols or x in col_str for x in ("company_id", "company_name")):
+            grain = "company"
+        elif any(x in cols or x in col_str for x in ("emp_id", "full_name")):
+            grain = "employee"
+        elif any(x in cols or x in col_str for x in ("dept_id", "dept_name")):
+            grain = "department"
+        elif "industry" in cols or "industry" in col_str:
+            grain = "industry"
+        elif "job_id" in cols or "job_id" in col_str:
+            grain = "job"
+        # Table-name heuristic when no GROUP BY or no match
+        if not grain:
+            if "company" in table_lower and ("stats" in table_lower or "dim" in table_lower):
+                grain = "company"
+            elif "employee" in table_lower or "career" in table_lower or "dim_employees" in table_lower:
+                grain = "employee"
+            elif "department" in table_lower or "dept" in table_lower:
+                grain = "department"
+            elif "industry" in table_lower:
+                grain = "industry"
+            elif "fact_jobs" in table_lower or "job" in table_lower:
+                grain = "job"
+        group_by_str = ", ".join(cols) if cols else None
+        return (grain, group_by_str)
 
     def _describe_table_changes(self, old_code: str, new_code: str) -> Dict[str, str]:
         """Build short descriptions of what changed in each table block."""
@@ -269,6 +404,20 @@ class PeerReviewOrchestrator:
                 changes.append(f"Added {new_joins - old_joins} JOIN(s)")
             elif new_joins < old_joins:
                 changes.append(f"Removed {old_joins - new_joins} JOIN(s)")
+            
+            # GROUP BY changes (match only column list: word chars, commas, dots; stop at ), ;, ORDER, HAVING)
+            group_by_re = re.compile(r'\bGROUP\s+BY\s+([a-zA-Z0-9_,.\s]+?)(?=\s*[;)]|\s+ORDER|\s+HAVING|\Z)', re.IGNORECASE)
+            old_gb = group_by_re.search(old_block)
+            new_gb = group_by_re.search(new_block)
+            old_gb_cols = old_gb.group(1).strip() if old_gb else None
+            new_gb_cols = new_gb.group(1).strip() if new_gb else None
+            if old_gb_cols != new_gb_cols:
+                if not old_gb_cols:
+                    changes.append(f"Added GROUP BY {new_gb_cols}")
+                elif not new_gb_cols:
+                    changes.append("GROUP BY removed")
+                else:
+                    changes.append(f"GROUP BY changed from {old_gb_cols} to {new_gb_cols}")
             
             # Column changes
             old_cols = set(re.findall(r'\bAS\s+([a-zA-Z_]\w*)', old_block, re.IGNORECASE))
@@ -366,16 +515,7 @@ class PeerReviewOrchestrator:
 
     def _create_no_changes_advisory(self) -> CommitAdvisory:
         """Create advisory when no changes detected."""
-        output = []
-        output.append("")
-        output.append("╔" + "="*68 + "╗")
-        output.append("║" + " "*20 + "SENIOR PEER REVIEW" + " "*30 + "║")
-        output.append("╚" + "="*68 + "╝")
-        output.append("")
-        output.append("✅ No SQL changes detected. You're good!")
-        output.append("")
-        output.append("─" * 70)
-        
+        output = "PEER REVIEW REPORT\n\nNo SQL changes detected.\n---"
         return CommitAdvisory(
             risk_level='GREEN',
             advisory='Safe to commit',
@@ -386,145 +526,125 @@ class PeerReviewOrchestrator:
             files_changed=0,
             technical_blockers=0,
             business_impact_summary='No changes detected',
-            formatted_output="\n".join(output)
+            formatted_output=output
         )
 
-    def _format_output(
+    def _format_clear_report(
         self,
-        risk_level: str,
-        advisory: str,
-        files: List[str],
         syntax_errors: List[str],
         changed_tables: List[str],
         table_descriptions: Dict[str, str],
-        impact_chains: Dict[str, List]
+        table_old_summary: Dict[str, str],
+        table_to_file: Dict[str, str],
+        impact_chains: Dict[str, List],
+        grain_mismatch_notes: List[Tuple[str, str, str, str, str, str]],
+        business_context: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Format the clean peer review output."""
-        
-        risk_emoji = {'GREEN': '🟢', 'YELLOW': '🟡', 'RED': '🔴'}
-        
-        output = []
-        output.append("")
-        output.append("╔" + "="*68 + "╗")
-        output.append("║" + " "*20 + "SENIOR PEER REVIEW" + " "*30 + "║")
-        output.append("╚" + "="*68 + "╝")
-        output.append("")
-        
-        # Risk level
-        output.append(f"Risk Level: {risk_emoji.get(risk_level, '⚪')} {risk_level} - {advisory}")
-        output.append("")
-        
-        # ── Section 1: Syntax Errors (only if found) ──
+        """Format a clear report: from→to, impact, incorrect (typos/schema), business, Senior DE thoughts."""
+        lines = []
+        lines.append("PEER REVIEW REPORT")
+        lines.append("")
+
+        # 0. Senior DE thoughts (when business context exists — like a human who knows the project)
+        if business_context:
+            thoughts = self._senior_de_thoughts(
+                business_context=business_context,
+                changed_tables=changed_tables,
+                table_to_file=table_to_file,
+                impact_chains=impact_chains,
+                syntax_errors=syntax_errors,
+                grain_mismatch_notes=grain_mismatch_notes,
+            )
+            if thoughts:
+                lines.append("SENIOR DATA ENGINEER NOTES:")
+                for t in thoughts:
+                    lines.append(f"  - {t}")
+                lines.append("")
+
+        # 1. For each change: "User changed from X to Y. This change impacts: ..."
+        for table in sorted(changed_tables):
+            filepath = table_to_file.get(table, "(unknown file)")
+            from_summary = table_old_summary.get(table, "(previous logic)")
+            to_summary = table_descriptions.get(table, "logic modified")
+            impacts = impact_chains.get(table, [])
+            downstream = [t for t, _ in impacts]
+            impact_str = ", ".join(downstream) if downstream else "no downstream tables"
+            lines.append(f"** {table} (file: {filepath})")
+            lines.append(f"   Changed from: {from_summary}")
+            lines.append(f"   To: {to_summary}")
+            lines.append(f"   This change impacts: {impact_str}")
+            lines.append("")
+
+        # 2. Incorrect (technical): typo in schema name, SQL keyword typo, etc.
         if syntax_errors:
-            output.append("⚠️  Syntax Errors:")
-            output.append("   These are bugs that will BREAK your code if deployed.")
-            for error in syntax_errors:
-                output.append(f"   🔴 {error}")
-            output.append("")
-        
-        # ── Section 2: Directly Changed Tables ──
-        output.append("📋 Directly Changed Tables:")
-        output.append("   These are the tables whose logic you modified.")
-        if changed_tables:
-            for table in sorted(changed_tables):
-                desc = table_descriptions.get(table, "")
-                if desc:
-                    output.append(f"   • {table}  — {desc}")
+            lines.append("INCORRECT (technical):")
+            for err in syntax_errors:
+                if "Unknown schema" in err or "schema" in err.lower():
+                    lines.append(f"  - Typo or unknown schema name: {err}")
+                elif "typo" in err.lower():
+                    lines.append(f"  - SQL keyword typo: {err}")
                 else:
-                    output.append(f"   • {table}")
-        else:
-            output.append("   (none)")
-        output.append("")
-        
-        # ── Section 3: Impact Chain (Downstream Dominos) ──
-        output.append("🔗 Impact Chain (Downstream Dominos):")
-        output.append("   These tables DEPEND on the ones you changed — they'll be affected too.")
-        
-        has_any_chain = any(len(chain) > 0 for chain in impact_chains.values())
-        
-        if has_any_chain:
-            output.append("")
-            for table in sorted(impact_chains.keys()):
-                chain = impact_chains[table]
-                if not chain:
-                    continue
-                output.append(f"   {table}")
-                for i, (downstream, distance) in enumerate(chain):
-                    is_last = (i == len(chain) - 1)
-                    connector = "└─→" if is_last else "├─→"
-                    hop_label = "1 hop - direct dependency" if distance == 1 else f"{distance} hops away"
-                    output.append(f"     {connector} {downstream} ({hop_label})")
-                output.append("")
-        else:
-            output.append("   ✅ No downstream dependencies found.")
-            # Check if lineage metadata exists
-            has_lineage = False
-            if self.debug_engine:
-                try:
-                    meta = self.debug_engine._check_metadata_exists()
-                    has_lineage = meta.get('table_lineage', False)
-                except:
-                    pass
-            if not has_lineage:
-                output.append("   💡 Run 'python scripts/cli.py build' to build lineage metadata.")
-            output.append("")
-        
-        # ── Section 4: Advisory ──
-        output.append("💡 Advisory:")
-        if risk_level == 'RED':
-            output.append(f"   {advisory.upper()}")
-            output.append("")
-            output.append("   Recommended actions:")
-            if syntax_errors:
-                output.append("   1. Fix syntax errors before committing")
-            else:
-                output.append("   1. Review all impacted downstream tables")
-                output.append("   2. Test changes in staging environment")
-                output.append("   3. Notify stakeholders of metric changes")
-        elif risk_level == 'YELLOW':
-            output.append(f"   {advisory}")
-            output.append("")
-            output.append("   Recommended actions:")
-            output.append("   1. Review downstream impact chain above")
-            output.append("   2. Verify downstream tables still produce correct results")
-            output.append("   3. Monitor metrics after deployment")
-        else:
-            output.append(f"   ✅ {advisory}")
-            output.append("   No significant risks detected.")
-        
-        output.append("")
-        output.append("─" * 70)
-        
-        return "\n".join(output)
+                    lines.append(f"  - {err}")
+            lines.append("")
 
-    def _format_no_changes(self) -> str:
-        """Format output when no changes detected."""
-        output = []
-        output.append("")
-        output.append("╔" + "="*68 + "╗")
-        output.append("║" + " "*20 + "SENIOR PEER REVIEW" + " "*30 + "║")
-        output.append("╚" + "="*68 + "╝")
-        output.append("")
-        output.append("✅ No SQL changes detected. You're good!")
-        output.append("")
-        output.append("─" * 70)
-        return "\n".join(output)
+        # 3. Business: grain mismatch (senior DE wording)
+        if grain_mismatch_notes:
+            lines.append("BUSINESS (grain / logic mismatch):")
+            for changed_table, downstream_table, changed_grain, down_grain, new_gb, down_gb in grain_mismatch_notes:
+                lines.append(
+                    f"  - Downstream table {downstream_table} is built at {down_grain}-level grain (GROUP BY {down_gb}). "
+                    f"Your change to {changed_table} now produces {changed_grain}-level grain (GROUP BY {new_gb}). "
+                    f"Feeding {changed_grain}-level output into a {down_grain}-level table will duplicate or corrupt metrics. "
+                    f"Align grains or update the downstream logic."
+                )
+            lines.append("")
 
+        lines.append("---")
+        return "\n".join(lines)
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# CLI / Testing
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def _senior_de_thoughts(
+        self,
+        business_context: Dict[str, Any],
+        changed_tables: List[str],
+        table_to_file: Dict[str, str],
+        impact_chains: Dict[str, List],
+        syntax_errors: List[str],
+        grain_mismatch_notes: List[Tuple[str, str, str, str, str, str]],
+    ) -> List[str]:
+        """Build human-like notes from a senior DE who knows the business."""
+        thoughts: List[str] = []
+        etl_paths = {e["path"] for e in business_context.get("etl_files", []) if e.get("type") in ("etl_sql", "sql")}
+        tables_info = business_context.get("tables", {})
+
+        # Which changed files are ETL
+        changed_files = list(set(table_to_file.get(t, "") for t in changed_tables if table_to_file.get(t)))
+        norm_etl = {p.replace("\\", "/") for p in etl_paths}
+        etl_changed = [f for f in changed_files if f and (f.replace("\\", "/") in norm_etl)]
+        if etl_changed:
+            thoughts.append(f"You changed ETL script(s): {', '.join(etl_changed)}. These drive the pipeline; impact below.")
+
+        # High-impact tables (many downstream)
+        for table in changed_tables:
+            downstream = impact_chains.get(table, [])
+            if len(downstream) >= 2:
+                info = tables_info.get(table, {})
+                grain = info.get("grain") or "unknown"
+                desc = info.get("description") or ""
+                label = f" ({desc})" if desc else f" — {grain}-level." if grain != "unknown" else ""
+                thoughts.append(f"{table}{label} feeds {len(downstream)} downstream table(s). Confirm metrics and grain stay aligned.")
+
+        # Typos
+        if syntax_errors:
+            thoughts.append("Fix the technical issues above (typos/schema) before relying on lineage; they can break the build.")
+
+        # Grain mismatch already called out in BUSINESS section
+        if grain_mismatch_notes:
+            thoughts.append("There is a grain mismatch between a changed table and a downstream table; see BUSINESS section.")
+
+        return thoughts[:5]
+
 
 if __name__ == '__main__':
-    import json
-    
     orchestrator = PeerReviewOrchestrator()
     advisory = orchestrator.review_changes(staged_only=False)
-    
     print(advisory.formatted_output)
-    
-    # Also save JSON for debugging
-    with open('peer_review_result.json', 'w') as f:
-        json.dump(advisory.to_dict(), f, indent=2)
-    
-    print("\nDetailed results saved to peer_review_result.json")

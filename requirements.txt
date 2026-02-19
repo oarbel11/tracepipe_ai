@@ -5,3 +5,4 @@ gitpython
 networkx
 databricks-sql-connector
 sqlparse
+pyyaml
