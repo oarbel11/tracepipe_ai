@@ -118,17 +118,11 @@ try {
     Write-Host "✅ Installation complete!" -ForegroundColor Green
     Write-Host ""
 
-    # Run setup wizard
+    # Run setup wizard (handles lineage build + peer review prompt)
     Write-Host "-------------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "🚀 Starting setup wizard..." -ForegroundColor Yellow
     Write-Host ""
     python scripts/setup_wizard.py
 
-    Write-Host ""
-    Write-Host "-------------------------------------------------------------------" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "📖 Full documentation: See README.md" -ForegroundColor Cyan
     Write-Host ""
 }
 catch {

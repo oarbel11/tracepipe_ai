@@ -41,9 +41,12 @@ After running the install command, you'll go through an **interactive setup wiza
    - Automatically writes MCP configuration files
    - Shows manual instructions if no tools detected
 
-5. **Guide you through next steps:**
-   - Build lineage metadata
-   - Set up peer review
+5. **Automatically build lineage metadata:**
+   - Scans your SQL/ETL files and builds the lineage graph
+   - No manual step needed — this runs right after configuration
+
+6. **Ask if you'd like to set up peer review** (optional):
+   - You can set it up now or anytime later with `python scripts/cli.py peer-review setup`
 
 The wizard automatically writes your configuration to `config/config.yml`. You can edit this file anytime to change settings.
 

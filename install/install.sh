@@ -81,15 +81,9 @@ echo ""
 echo "✅ Installation complete!"
 echo ""
 
-# Run setup wizard
+# Run setup wizard (handles lineage build + peer review prompt)
 echo "-------------------------------------------------------------------"
-echo ""
-echo "🚀 Starting setup wizard..."
 echo ""
 python scripts/setup_wizard.py
 
-echo ""
-echo "-------------------------------------------------------------------"
-echo ""
-echo "📖 Full documentation: See README.md"
 echo ""
