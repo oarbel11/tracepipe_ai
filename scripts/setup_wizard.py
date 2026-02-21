@@ -349,9 +349,9 @@ def show_next_steps(config):
 
 def main():
     """Main setup wizard."""
-    print("\n" + "╔" + "═" * 68 + "╗")
-    print("║" + " " * 18 + "Tracepipe AI Setup Wizard" + " " * 24 + "║")
-    print("╚" + "═" * 68 + "╝\n")
+    print("\n" + "=" * 70)
+    print(" " * 18 + "Tracepipe AI Setup Wizard")
+    print("=" * 70 + "\n")
     
     print("This wizard will help you configure Tracepipe AI for your database.")
     print("You can always edit config/config.yml later to change settings.\n")
@@ -389,8 +389,8 @@ def main():
     # Step 5: Show next steps
     show_next_steps(config)
     
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("\n✅ Setup complete! You're ready to use Tracepipe AI.\n")
+    print("-------------------------------------------------------------------")
+    print("\n\u2705 Setup complete! You're ready to use Tracepipe AI.\n")
 
 if __name__ == '__main__':
     try:

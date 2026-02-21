@@ -8,18 +8,18 @@ Tracepipe AI connects to your database, traces how every table and column is bui
 
 ## 🚀 Quick Start
 
-### Install (curl only — run in your IDE terminal)
+### Install (run in your IDE terminal)
 
 **Mac / Linux:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.sh | bash
 ```
 
-**Windows (PowerShell or CMD):**
+**Windows (any IDE terminal — VS Code, Cursor, etc.):**
 ```powershell
-curl -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+curl.exe -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
-This downloads the installer with curl, then runs it. The window stays open so you can read any errors or "Press Enter to close."
+This downloads the installer and runs it. The window stays open so you can read any errors.
 
 ### What Happens Next
 
