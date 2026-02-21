@@ -15,8 +15,9 @@ USAGE:
     python mcp_server.py
 
 ENVIRONMENT VARIABLES:
-    DEBUG_AI_DB_PATH - Path to database (optional, auto-detects)
-    DEBUG_AI_DB_TYPE - Database type (default: duckdb)
+    TRACEPIPE_AI_DB_PATH - Path to database (optional, auto-detects)
+    TRACEPIPE_AI_DB_TYPE - Database type (default: duckdb)
+    DEBUG_AI_* - Also supported for backward compatibility
 """
 
 import os

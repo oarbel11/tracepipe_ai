@@ -1,6 +1,6 @@
 # ════════════════════════════════════════════════════════════════
 #                         .gitignore
-#                    Debug AI Project
+#                    Tracepipe AI Project
 # ════════════════════════════════════════════════════════════════
 
 # ─────────────────────────────────────────────────────────────────
@@ -63,9 +63,10 @@ Thumbs.db
 desktop.ini
 
 # ─────────────────────────────────────────────────────────────────
-# Debug AI Specific
+# Tracepipe AI Specific
 # ─────────────────────────────────────────────────────────────────
 # Config file (created by cli.py init - each user has their own)
+.tracepipe_ai_config.json
 .debug_ai_config.json
 # Peer review / Make.com generated outputs
 peer_review_result.json

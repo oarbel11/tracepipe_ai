@@ -209,7 +209,7 @@ class MetadataBuilder:
 
         if not self.sql_dir or not self.sql_dir.exists():
             print(f'\n⚠️  SQL directory not found: {self.sql_dir}')
-            print('   Use --sql-dir or set DEBUG_AI_ETL_DIR')
+            print('   Use --sql-dir or set TRACEPIPE_AI_ETL_DIR')
             return False
 
         print(f'📂 SQL Directory: {self.sql_dir}')
@@ -295,8 +295,8 @@ def main():
     args = parser.parse_args()
 
     # Auto-detect paths
-    db_path = args.db or os.getenv('DEBUG_AI_DB_PATH')
-    sql_dir = args.sql_dir or os.getenv('DEBUG_AI_ETL_DIR')
+    db_path = args.db or os.getenv('TRACEPIPE_AI_DB_PATH') or os.getenv('DEBUG_AI_DB_PATH')
+    sql_dir = args.sql_dir or os.getenv('TRACEPIPE_AI_ETL_DIR') or os.getenv('DEBUG_AI_ETL_DIR')
 
     if not db_path:
         try:
@@ -313,7 +313,7 @@ def main():
             pass
 
     if not db_path:
-        print('❌ Database path required! Use --db or set DEBUG_AI_DB_PATH')
+        print('❌ Database path required! Use --db or set TRACEPIPE_AI_DB_PATH')
         sys.exit(1)
 
     builder = MetadataBuilder(db_path=db_path, sql_dir=sql_dir, meta_schema=args.meta_schema)

@@ -1,23 +1,23 @@
 #!/bin/bash
 # Debug AI - One-line installer
 # 
-# Usage: curl -fsSL https://raw.githubusercontent.com/oarbel11/debug_ai/main/install/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.sh | bash
 # 
-# Repository: https://github.com/oarbel11/debug_ai
-#            Users can also set DEBUG_AI_REPO env var to use a custom repo URL.
+# Repository: https://github.com/oarbel11/tracepipe_ai
+#            Users can also set TRACEPIPE_AI_REPO env var to use a custom repo URL.
 
 set -e
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║                    Debug AI Installer                              ║"
+echo "║                    Tracepipe AI Installer                           ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Detect git repo URL (default to main branch)
-REPO_URL="${DEBUG_AI_REPO:-https://github.com/oarbel11/debug_ai.git}"
-BRANCH="${DEBUG_AI_BRANCH:-main}"
-INSTALL_DIR="${DEBUG_AI_DIR:-./debug_ai}"
+# Detect git repo URL (default to master branch)
+REPO_URL="${TRACEPIPE_AI_REPO:-https://github.com/oarbel11/tracepipe_ai.git}"
+BRANCH="${TRACEPIPE_AI_BRANCH:-master}"
+INSTALL_DIR="${TRACEPIPE_AI_DIR:-./tracepipe_ai}"
 
 # Check if directory already exists
 if [ -d "$INSTALL_DIR" ]; then
@@ -32,7 +32,7 @@ if [ -d "$INSTALL_DIR" ]; then
 fi
 
 # Clone repository
-echo "📦 Cloning Debug AI..."
+echo "📦 Cloning Tracepipe AI..."
 git clone -b "$BRANCH" "$REPO_URL" "$INSTALL_DIR" || {
     echo "❌ Failed to clone repository."
     echo "   Make sure git is installed: https://git-scm.com/downloads"
