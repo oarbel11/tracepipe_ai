@@ -106,7 +106,7 @@ try {
     # Install dependencies
     Write-Host ""
     Write-Host "📥 Installing dependencies..." -ForegroundColor Cyan
-    pip install --quiet -r requirements.txt
+    python -m pip install --quiet -r requirements.txt
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ Failed to install dependencies" -ForegroundColor Red
         Pause-BeforeExit
