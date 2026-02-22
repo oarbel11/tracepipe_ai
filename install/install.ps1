@@ -99,14 +99,14 @@ try {
     Write-Host "   Activating virtual environment..." -ForegroundColor Cyan
     & .\.venv\Scripts\Activate.ps1
 
-    # Upgrade pip
+    # Use "python -m pip" so pip runs reliably when not on PATH (e.g. some Windows installs)
     Write-Host "   Upgrading pip..." -ForegroundColor Cyan
     python -m pip install --quiet --upgrade pip
 
     # Install dependencies
     Write-Host ""
     Write-Host "📥 Installing dependencies..." -ForegroundColor Cyan
-    pip install --quiet -r requirements.txt
+    python -m pip install --quiet -r requirements.txt
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ Failed to install dependencies" -ForegroundColor Red
         Pause-BeforeExit

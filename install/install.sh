@@ -67,14 +67,14 @@ python3 -m venv .venv
 echo "   Activating virtual environment..."
 source .venv/bin/activate
 
-# Upgrade pip
+# Use "python -m pip" so pip runs reliably when not on PATH
 echo "   Upgrading pip..."
-pip install --quiet --upgrade pip
+python -m pip install --quiet --upgrade pip
 
 # Install dependencies
 echo ""
 echo "📥 Installing dependencies..."
-pip install --quiet -r requirements.txt
+python -m pip install --quiet -r requirements.txt
 
 # Verify installation
 echo ""
