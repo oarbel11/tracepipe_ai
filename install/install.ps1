@@ -1,6 +1,6 @@
 # Debug AI - Windows PowerShell installer
-# Run from your IDE terminal (VS Code, Cursor, etc.):
-#   curl.exe -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+# Run from your IDE terminal (VS Code, Cursor, etc.) — works in cmd, PowerShell, and Git Bash:
+#   powershell -NoProfile -ExecutionPolicy Bypass -Command "curl.exe -fsSL 'https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1' -o install.ps1; .\install.ps1"
 #
 # Repository: https://github.com/oarbel11/tracepipe_ai
 
