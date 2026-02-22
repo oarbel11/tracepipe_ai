@@ -9,9 +9,9 @@
 set -e
 
 echo ""
-echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║                    Tracepipe AI Installer                           ║"
-echo "╚══════════════════════════════════════════════════════════════════╝"
+echo "==================================================================="
+echo "                    Tracepipe AI Installer                          "
+echo "==================================================================="
 echo ""
 
 # Detect git repo URL (default to master branch)
@@ -81,15 +81,9 @@ echo ""
 echo "✅ Installation complete!"
 echo ""
 
-# Run setup wizard
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "🚀 Starting setup wizard..."
+# Run setup wizard (handles lineage build + peer review prompt)
+echo "-------------------------------------------------------------------"
 echo ""
 python scripts/setup_wizard.py
 
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "📖 Full documentation: See README.md"
 echo ""

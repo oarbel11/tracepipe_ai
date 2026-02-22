@@ -332,26 +332,75 @@ def show_mcp_manual_instructions(mcp_path):
     print("   - 'How is risk_level calculated?'")
     print("   - 'Run peer review'")
 
-def show_next_steps(config):
-    """Show next steps after configuration."""
-    print_header("Next Steps")
+def run_lineage_build(config):
+    """Auto-run lineage metadata build after configuration."""
+    print_header("Building Lineage Metadata")
     
-    print("1. Build lineage metadata:")
-    print("   python scripts/cli.py build\n")
+    try:
+        # Import config loader to get effective config (reads config.yml)
+        from config.db_config import load_config as load_db_config
+        db_config = load_db_config()
+        
+        db_path = db_config.get('duckdb', {}).get('path', '') if config['db_type'] == 'duckdb' else ''
+        sql_dir = db_config.get('sql_dir', config.get('sql_dir', ''))
+        
+        if not sql_dir:
+            print("   ⚠️  No SQL directory configured. Skipping lineage build.")
+            print("   You can run it later: python scripts/cli.py build\n")
+            return False
+        
+        print(f"   Scanning SQL files in: {sql_dir}")
+        print(f"   Database: {db_path}\n")
+        
+        from scripts.build_metadata import MetadataBuilder
+        
+        builder = MetadataBuilder(
+            db_path=db_path,
+            sql_dir=sql_dir,
+            meta_schema='meta'
+        )
+        builder.build()
+        
+        print("\n   ✅ Lineage metadata built successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"\n   ⚠️  Lineage build encountered an issue: {e}")
+        print("   You can retry later: python scripts/cli.py build")
+        return False
+
+
+def run_peer_review_setup(config):
+    """Prompt user for optional peer review setup."""
+    print_header("Peer Review Setup")
     
-    if config['db_type'] == 'duckdb' and config.get('sql_dir'):
-        print("2. Set up peer review (once per project):")
+    print("Peer Review gives you senior-level code reviews before you commit.")
+    print("It catches SQL errors, downstream impact, and business logic issues.\n")
+    
+    response = input("   Set up peer review now? (Y/n): ").strip().lower()
+    
+    if response and response != 'y':
+        print("\n   Skipped. You can set it up anytime by running:")
         print("   python scripts/cli.py peer-review setup\n")
+        return
     
-    print("3. Start using Tracepipe AI!")
-    print("   - Via CLI: python scripts/cli.py query <table> <column>")
-    print("   - Via MCP: Ask your AI tool questions about your data\n")
+    try:
+        from scripts.peer_review.context_builder import build_peer_review_context
+        repo_path = str(PROJECT_ROOT)
+        path = build_peer_review_context(repo_path=repo_path, run_build=True)
+        print(f"\n   ✅ Peer review context saved to: {path}")
+        print("\n   When you run peer review (or ask your AI tool to review),")
+        print("   it will respond like a senior data engineer who knows your project.")
+    except Exception as e:
+        print(f"\n   ⚠️  Peer review setup encountered an issue: {e}")
+        print("   You can retry anytime: python scripts/cli.py peer-review setup")
+
 
 def main():
     """Main setup wizard."""
-    print("\n" + "╔" + "═" * 68 + "╗")
-    print("║" + " " * 18 + "Tracepipe AI Setup Wizard" + " " * 24 + "║")
-    print("╚" + "═" * 68 + "╝\n")
+    print("\n" + "=" * 70)
+    print(" " * 18 + "Tracepipe AI Setup Wizard")
+    print("=" * 70 + "\n")
     
     print("This wizard will help you configure Tracepipe AI for your database.")
     print("You can always edit config/config.yml later to change settings.\n")
@@ -386,11 +435,17 @@ def main():
         # If auto-config failed or user declined, show manual instructions
         show_mcp_manual_instructions(mcp_path)
     
-    # Step 5: Show next steps
-    show_next_steps(config)
+    # Step 5: Auto-run lineage build
+    run_lineage_build(config)
     
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("\n✅ Setup complete! You're ready to use Tracepipe AI.\n")
+    # Step 6: Ask about peer review setup (optional)
+    run_peer_review_setup(config)
+    
+    # Done
+    print("\n-------------------------------------------------------------------")
+    print("\n\u2705 Setup complete! You're ready to use Tracepipe AI.")
+    print("\n   Tip: You can set up peer review anytime by running:")
+    print("   python scripts/cli.py peer-review setup\n")
 
 if __name__ == '__main__':
     try:

@@ -8,18 +8,18 @@ Tracepipe AI connects to your database, traces how every table and column is bui
 
 ## 🚀 Quick Start
 
-### Install (curl only — run in your IDE terminal)
+### Install (run in your IDE terminal)
 
 **Mac / Linux:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.sh | bash
 ```
 
-**Windows (PowerShell or CMD):**
+**Windows (any IDE terminal — VS Code, Cursor, etc.):**
 ```powershell
-curl -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
+curl.exe -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
-This downloads the installer with curl, then runs it. The window stays open so you can read any errors or "Press Enter to close."
+This downloads the installer and runs it. The window stays open so you can read any errors.
 
 ### What Happens Next
 
@@ -41,9 +41,12 @@ After running the install command, you'll go through an **interactive setup wiza
    - Automatically writes MCP configuration files
    - Shows manual instructions if no tools detected
 
-5. **Guide you through next steps:**
-   - Build lineage metadata
-   - Set up peer review
+5. **Automatically build lineage metadata:**
+   - Scans your SQL/ETL files and builds the lineage graph
+   - No manual step needed — this runs right after configuration
+
+6. **Ask if you'd like to set up peer review** (optional):
+   - You can set it up now or anytime later with `python scripts/cli.py peer-review setup`
 
 The wizard automatically writes your configuration to `config/config.yml`. You can edit this file anytime to change settings.
 

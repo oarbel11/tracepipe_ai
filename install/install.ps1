@@ -1,8 +1,6 @@
 # Debug AI - Windows PowerShell installer
-# Run with curl only (from IDE terminal or PowerShell):
-#   curl -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
-# Or one-liner (curl pipes script to PowerShell):
-#   curl -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" | powershell -NoProfile -ExecutionPolicy Bypass -Command -
+# Run from your IDE terminal (VS Code, Cursor, etc.):
+#   curl.exe -fsSL "https://raw.githubusercontent.com/oarbel11/tracepipe_ai/master/install/install.ps1" -o install.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 #
 # Repository: https://github.com/oarbel11/tracepipe_ai
 
@@ -15,9 +13,9 @@ function Pause-BeforeExit {
 
 try {
     Write-Host ""
-    Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                    Tracepipe AI Installer                           ║" -ForegroundColor Cyan
-    Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "===================================================================" -ForegroundColor Cyan
+    Write-Host "                    Tracepipe AI Installer                          " -ForegroundColor Cyan
+    Write-Host "===================================================================" -ForegroundColor Cyan
     Write-Host ""
 
     # Detect git repo URL (default to main branch)
@@ -120,17 +118,11 @@ try {
     Write-Host "✅ Installation complete!" -ForegroundColor Green
     Write-Host ""
 
-    # Run setup wizard
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "🚀 Starting setup wizard..." -ForegroundColor Yellow
+    # Run setup wizard (handles lineage build + peer review prompt)
+    Write-Host "-------------------------------------------------------------------" -ForegroundColor Cyan
     Write-Host ""
     python scripts/setup_wizard.py
 
-    Write-Host ""
-    Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "📖 Full documentation: See README.md" -ForegroundColor Cyan
     Write-Host ""
 }
 catch {
