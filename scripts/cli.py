@@ -449,14 +449,14 @@ def cmd_test(args):
 def cmd_peer_review(args):
     """Run senior peer review on code changes."""
     from scripts.peer_review.peer_review import PeerReviewOrchestrator
-    
+
     orchestrator = PeerReviewOrchestrator(repo_path=args.repo)
-    
+
     try:
         advisory = orchestrator.review_changes(staged_only=args.staged_only)
-        
+
         print(advisory.formatted_output)
-        
+
         # Save to file if requested
         if args.output:
             import json
@@ -464,20 +464,45 @@ def cmd_peer_review(args):
             with open(output_path, 'w') as f:
                 json.dump(advisory.to_dict(), f, indent=2)
             print(f"\n💾 Detailed report saved to: {output_path}")
-        
+
+        # Email the report if requested
+        if getattr(args, 'email', None):
+            _send_review_email(advisory, args.email)
+
         # Exit with appropriate code for git hooks
         if args.block and advisory.risk_level == 'RED':
             print("\n🛑 Commit blocked due to RED risk level")
             print("   Use --no-verify to bypass, or fix the issues above")
             sys.exit(1)
-        
+
         sys.exit(0)
-    
+
     except Exception as e:
         print(f"\n❌ Error during peer review: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+def _send_review_email(advisory, email_arg: str):
+    """Send a peer review report via email. email_arg is a comma-separated address list."""
+    try:
+        from scripts.email_sender import EmailSender
+        recipients = [addr.strip() for addr in email_arg.split(",") if addr.strip()]
+        if not recipients:
+            print("\n⚠️  No valid email addresses provided — skipping email.")
+            return
+        sender = EmailSender()
+        sender.send_peer_review_report(
+            report_text=advisory.formatted_output,
+            to=recipients,
+            risk_level=advisory.risk_level,
+        )
+        print(f"\n📧 Report emailed to: {', '.join(recipients)}")
+    except ValueError as e:
+        print(f"\n⚠️  Email config error: {e}")
+    except Exception as e:
+        print(f"\n⚠️  Failed to send email: {e}")
 
 
 def cmd_peer_review_install_hook(args):
@@ -685,6 +710,7 @@ Examples:
     pr_check.add_argument('--output', '-o', help='Save detailed report to JSON file')
     pr_check.add_argument('--block', action='store_true', help='Exit with error on RED risk (for git hooks)')
     pr_check.add_argument('--repo', help='Path to git repository (default: current dir)')
+    pr_check.add_argument('--email', help='Email the report to these addresses (comma-separated). Requires email config in config/config.yml.')
     
     # peer-review setup
     pr_setup = pr_subparsers.add_parser('setup', help='Build business context (run once when installing MCP)')

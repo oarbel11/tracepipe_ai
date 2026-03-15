@@ -75,6 +75,19 @@ databricks:
   catalog: ""
 
 # ============================================
+# Email Configuration (optional)
+# ============================================
+# Fill in to enable emailing peer review reports.
+# Leave smtp_user / smtp_password blank to disable email.
+email:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_user: ""          # e.g. you@gmail.com
+  smtp_password: ""      # App password (not your login password)
+  from_address: ""       # Usually the same as smtp_user
+  use_tls: true
+
+# ============================================
 # Senior Peer Review Configuration
 # ============================================
 peer_review:

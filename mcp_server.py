@@ -552,6 +552,61 @@ def peer_review(staged_only: bool = False) -> str:
         return f"❌ Peer review error: {e}"
 
 
+@mcp.tool()
+def send_peer_review_report(
+    to: str,
+    staged_only: bool = False,
+) -> str:
+    """
+    📧 Run peer review and email the report to one or more recipients.
+
+    Runs the Senior Peer Review on current git changes and sends the
+    formatted report via email using SMTP settings from config/config.yml.
+
+    Args:
+        to: Comma-separated list of recipient email addresses.
+            Example: "alice@example.com" or "alice@example.com,bob@example.com"
+        staged_only: If True, only review git-staged files.
+                     If False (default), review ALL modified files.
+
+    Returns:
+        Confirmation message including the review risk level and recipients.
+
+    Prerequisites:
+        Set smtp_user, smtp_password, and from_address in config/config.yml
+        under the 'email' key.
+    """
+    try:
+        from scripts.peer_review.peer_review import PeerReviewOrchestrator
+        from scripts.email_sender import EmailSender
+
+        # Run the peer review
+        orchestrator = PeerReviewOrchestrator()
+        advisory = orchestrator.review_changes(staged_only=staged_only)
+
+        # Parse recipients
+        recipients = [addr.strip() for addr in to.split(",") if addr.strip()]
+        if not recipients:
+            return "❌ No valid recipient addresses provided."
+
+        # Send email
+        sender = EmailSender()
+        sender.send_peer_review_report(
+            report_text=advisory.formatted_output,
+            to=recipients,
+            risk_level=advisory.risk_level,
+        )
+
+        return (
+            f"✅ Peer review report sent to: {', '.join(recipients)}\n"
+            f"   Risk level: {advisory.risk_level} — {advisory.advisory}"
+        )
+    except ValueError as e:
+        return f"❌ Email configuration error: {e}"
+    except Exception as e:
+        return f"❌ Failed to send peer review email: {e}"
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MAIN ENTRY POINT
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -612,8 +667,9 @@ if __name__ == "__main__":
     print("     • analyze_data_quality - Comprehensive quality analysis")
     print()
     print("   Peer Review:")
-    print("     • peer_review_setup  - Build business context (run once when installing MCP)")
-    print("     • peer_review        - Review SQL changes for errors & impact")
+    print("     • peer_review_setup          - Build business context (run once when installing MCP)")
+    print("     • peer_review                - Review SQL changes for errors & impact")
+    print("     • send_peer_review_report    - Run peer review and email the report")
     print()
     print("🚀 Starting server...")
     print("=" * 60)
