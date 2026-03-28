@@ -1,44 +1,29 @@
-import networkx as nx
-from typing import Dict, List, Any, Optional
-from abc import ABC, abstractmethod
+"""Registry for managing external data source and sink connectors."""
 
-
-class BaseConnector(ABC):
-    def __init__(self, name: str, config: Dict[str, Any]):
-        self.name = name
-        self.config = config
-
-    @abstractmethod
-    def extract_lineage(self) -> List[Dict[str, Any]]:
-        pass
-
-    @abstractmethod
-    def get_node_type(self) -> str:
-        pass
+from typing import Dict, Optional, Any, List
 
 
 class ConnectorRegistry:
+    """Manages registration and retrieval of lineage connectors."""
+
     def __init__(self):
-        self._connectors: Dict[str, BaseConnector] = {}
+        self._connectors: Dict[str, Any] = {}
 
-    def register(self, connector_id: str, connector: BaseConnector):
-        self._connectors[connector_id] = connector
+    def register(self, name: str, connector: Any) -> None:
+        """Register a connector by name."""
+        self._connectors[name] = connector
 
-    def unregister(self, connector_id: str):
-        if connector_id in self._connectors:
-            del self._connectors[connector_id]
-
-    def get_connector(self, connector_id: str) -> Optional[BaseConnector]:
-        return self._connectors.get(connector_id)
+    def get(self, name: str) -> Optional[Any]:
+        """Retrieve a connector by name."""
+        return self._connectors.get(name)
 
     def list_connectors(self) -> List[str]:
+        """List all registered connector names."""
         return list(self._connectors.keys())
 
-    def extract_all_lineage(self) -> Dict[str, List[Dict[str, Any]]]:
-        lineage_data = {}
-        for conn_id, connector in self._connectors.items():
-            try:
-                lineage_data[conn_id] = connector.extract_lineage()
-            except Exception as e:
-                lineage_data[conn_id] = []
-        return lineage_data
+    def unregister(self, name: str) -> bool:
+        """Unregister a connector by name."""
+        if name in self._connectors:
+            del self._connectors[name]
+            return True
+        return False
