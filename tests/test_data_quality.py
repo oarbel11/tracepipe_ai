@@ -1,87 +1,80 @@
+"""Tests for data quality module."""
+
 import pytest
-import duckdb
 from datetime import datetime, timedelta
-from scripts.data_quality import QualityMetrics, QualityMonitor, LineageQualityIntegrator, MetricType
-import networkx as nx
+from tracepipe_ai.data_quality import QualityMetrics, MetricType, QualityMonitor, LineageIntegrator
 
-@pytest.fixture
-def db_conn():
-    conn = duckdb.connect(":memory:")
-    conn.execute("""
-        CREATE TABLE test_table (
-            id INTEGER,
-            name VARCHAR,
-            email VARCHAR,
-            updated_at TIMESTAMP
-        )
-    """)
-    conn.execute("INSERT INTO test_table VALUES (1, 'Alice', 'alice@test.com', TIMESTAMP '2024-01-15 10:00:00')")
-    conn.execute("INSERT INTO test_table VALUES (2, 'Bob', NULL, TIMESTAMP '2024-01-15 11:00:00')")
-    conn.execute("INSERT INTO test_table VALUES (3, 'Charlie', 'charlie@test.com', TIMESTAMP '2024-01-15 12:00:00')")
-    return conn
 
-@pytest.fixture
-def quality_metrics(db_conn):
-    return QualityMetrics(db_conn)
+class TestQualityMetrics:
+    """Test quality metrics calculation."""
 
-@pytest.fixture
-def quality_monitor(db_conn):
-    return QualityMonitor(db_conn)
+    def test_freshness_healthy(self):
+        """Test freshness calculation - healthy."""
+        last_updated = datetime.now() - timedelta(hours=12)
+        result = QualityMetrics.calculate_freshness(last_updated)
+        assert result["metric_type"] == MetricType.FRESHNESS.value
+        assert result["status"] == "healthy"
+        assert result["hours_old"] < 24
 
-def test_freshness_calculation(quality_metrics):
-    metric = quality_metrics.calculate_freshness("test_table", "updated_at", threshold_hours=1)
-    assert metric.metric_type == MetricType.FRESHNESS
-    assert metric.node_id == "test_table"
-    assert metric.status == "stale"
+    def test_freshness_critical(self):
+        """Test freshness calculation - critical."""
+        last_updated = datetime.now() - timedelta(hours=72)
+        result = QualityMetrics.calculate_freshness(last_updated)
+        assert result["status"] == "critical"
 
-def test_completeness_calculation(quality_metrics):
-    metric = quality_metrics.calculate_completeness("test_table", ["name", "email"])
-    assert metric.metric_type == MetricType.COMPLETENESS
-    assert metric.value < 100.0
-    assert metric.status in ["healthy", "warning", "critical"]
+    def test_completeness_healthy(self):
+        """Test completeness calculation - healthy."""
+        result = QualityMetrics.calculate_completeness(1000, 10)
+        assert result["metric_type"] == MetricType.COMPLETENESS.value
+        assert result["status"] == "healthy"
+        assert result["completeness_pct"] >= 95
 
-def test_volume_anomaly_detection(quality_metrics):
-    metric = quality_metrics.detect_volume_anomaly("test_table")
-    assert metric.metric_type == MetricType.VOLUME
-    assert metric.value == 3
+    def test_completeness_critical(self):
+        """Test completeness calculation - critical."""
+        result = QualityMetrics.calculate_completeness(1000, 200)
+        assert result["status"] == "critical"
 
-def test_monitor_table(quality_monitor):
-    config = {
-        "freshness": {"timestamp_col": "updated_at", "threshold_hours": 1},
-        "completeness": {"columns": ["name", "email"]}
-    }
-    metrics = quality_monitor.monitor_table("test_table", config)
-    assert len(metrics) == 2
-    assert any(m.metric_type == MetricType.FRESHNESS for m in metrics)
-    assert any(m.metric_type == MetricType.COMPLETENESS for m in metrics)
+    def test_volume_anomaly_healthy(self):
+        """Test volume anomaly - healthy."""
+        result = QualityMetrics.calculate_volume_anomaly(100, 100, 10)
+        assert result["metric_type"] == MetricType.VOLUME.value
+        assert result["status"] == "healthy"
 
-def test_get_node_metrics(quality_monitor):
-    config = {"freshness": {"timestamp_col": "updated_at"}}
-    quality_monitor.monitor_table("test_table", config)
-    metrics = quality_monitor.get_node_metrics("test_table")
-    assert len(metrics) > 0
-    assert "type" in metrics[0]
+    def test_volume_anomaly_critical(self):
+        """Test volume anomaly - critical."""
+        result = QualityMetrics.calculate_volume_anomaly(200, 100, 10)
+        assert result["status"] == "critical"
 
-def test_lineage_integration(quality_monitor):
-    graph = nx.DiGraph()
-    graph.add_edge("table_a", "table_b")
-    graph.add_edge("table_b", "table_c")
-    
-    integrator = LineageQualityIntegrator(quality_monitor)
-    enriched = integrator.enrich_lineage_graph(graph)
-    
-    assert "quality_status" in enriched.nodes["table_a"]
-    assert "quality_metrics" in enriched.nodes["table_a"]
 
-def test_impact_summary(quality_monitor):
-    graph = nx.DiGraph()
-    graph.add_edge("source", "downstream1")
-    graph.add_edge("downstream1", "downstream2")
-    
-    integrator = LineageQualityIntegrator(quality_monitor)
-    enriched = integrator.enrich_lineage_graph(graph)
-    summary = integrator.get_impact_summary(enriched, "source")
-    
-    assert "source" in summary
-    assert "total_downstream" in summary
-    assert summary["total_downstream"] == 2
+class TestQualityMonitor:
+    """Test quality monitoring."""
+
+    def test_record_metric(self):
+        """Test recording a metric."""
+        monitor = QualityMonitor()
+        metric = {"metric_type": "freshness", "status": "healthy"}
+        monitor.record_metric("node1", metric)
+        metrics = monitor.get_node_metrics("node1")
+        assert len(metrics) == 1
+
+    def test_alert_creation(self):
+        """Test alert creation for warning status."""
+        monitor = QualityMonitor()
+        metric = {"metric_type": "freshness", "status": "warning"}
+        monitor.record_metric("node1", metric)
+        alerts = monitor.get_active_alerts()
+        assert len(alerts) == 1
+        assert alerts[0]["status"] == "warning"
+
+
+class TestLineageIntegrator:
+    """Test lineage integration."""
+
+    def test_enrich_node(self):
+        """Test enriching a single node."""
+        monitor = QualityMonitor()
+        integrator = LineageIntegrator(monitor)
+        node = {"id": "node1", "name": "table1"}
+        enriched = integrator.enrich_lineage_node(node)
+        assert "quality_metrics" in enriched
+        assert "quality_status" in enriched
