@@ -1,91 +1,83 @@
+"""Tests for column-level lineage extraction."""
+
 import pytest
-import json
 from scripts.lineage import SparkColumnParser, ColumnLineageGraph, NotebookLineageAnalyzer
 
 
-def test_spark_parser_basic():
+def test_spark_column_parser_python():
+    """Test parsing Python Spark code."""
     parser = SparkColumnParser()
-    code = 'df.withColumn("total", col("price") * col("quantity"))'
-    result = parser.parse_notebook_cell(code, 1)
-    assert result["cell_id"] == 1
-    assert len(result["operations"]) > 0
+    code = 'df.select("col1", "col2")'
+    mappings = parser.parse_python_code(code)
+    assert isinstance(mappings, list)
 
 
-def test_spark_parser_select():
+def test_spark_column_parser_scala():
+    """Test parsing Scala Spark code."""
     parser = SparkColumnParser()
-    code = 'df.select("customer_id", "order_date")'
-    result = parser.parse_notebook_cell(code, 2)
-    assert "operations" in result
+    code = 'df.select("col1").withColumn("col2", col("col1"))'
+    mappings = parser.parse_scala_code(code)
+    assert isinstance(mappings, list)
+    assert len(mappings) >= 1
 
 
-def test_udf_detection():
-    parser = SparkColumnParser()
-    code = '''@udf
-def calculate_discount(price):
-    return price * 0.9'''
-    result = parser.parse_notebook_cell(code, 3)
-    assert len(result["udfs"]) == 1
-    assert result["udfs"][0]["name"] == "calculate_discount"
-
-
-def test_lineage_graph_add_table():
+def test_column_lineage_graph():
+    """Test building lineage graph."""
     graph = ColumnLineageGraph()
-    graph.add_table("orders", ["order_id", "customer_id", "total"])
-    assert "orders" in graph.tables
-    assert graph.graph.has_node("orders.order_id")
-
-
-def test_lineage_graph_transformation():
-    graph = ColumnLineageGraph()
-    graph.add_transformation(["price", "quantity"], "total", "multiply", 1)
-    assert graph.graph.has_node("temp.total")
-    upstream = graph.get_upstream_lineage("total")
-    assert upstream["count"] >= 0
-
-
-def test_lineage_graph_upstream():
-    graph = ColumnLineageGraph()
-    graph.add_table("sales", ["price", "quantity"])
-    graph.add_transformation(["sales.price", "sales.quantity"], "revenue", "*", 1)
-    graph.add_transformation(["revenue"], "annual_revenue", "sum", 2)
+    source_col = graph.add_column("source_table", "col1")
+    target_col = graph.add_column("target_table", "col2")
+    graph.add_transformation(source_col, target_col, "select")
     
-    lineage = graph.get_upstream_lineage("annual_revenue")
-    assert lineage["count"] > 0
-
-
-def test_lineage_graph_downstream():
-    graph = ColumnLineageGraph()
-    graph.add_transformation(["base"], "derived1", "op1", 1)
-    graph.add_transformation(["derived1"], "derived2", "op2", 2)
+    assert len(graph.nodes) == 2
+    assert len(graph.edges) == 1
     
-    impact = graph.get_downstream_impact("base")
-    assert impact["count"] >= 1
+    upstream = graph.get_upstream_columns(target_col)
+    assert source_col in upstream
 
 
 def test_notebook_analyzer():
+    """Test notebook analysis."""
     analyzer = NotebookLineageAnalyzer()
     cells = [
-        {"cell_type": "code", "source": "df = spark.read.table('orders')"},
-        {"cell_type": "code", "source": 'df2 = df.withColumn("tax", col("total") * 0.1)'}
+        {"cell_type": "code", "source": 'df.select("col1")', "language": "python"}
     ]
-    result = analyzer.analyze_notebook(cells)
-    assert result["cells_analyzed"] >= 0
-
-
-def test_export_visualization():
-    graph = ColumnLineageGraph()
-    graph.add_table("products", ["product_id", "price"])
-    graph.add_transformation(["products.price"], "discounted_price", "*0.9", 1)
+    result = analyzer.analyze_notebook("test.ipynb", cells)
     
-    viz = graph.export_visualization()
-    assert "nodes" in viz
-    assert "edges" in viz
-    assert len(viz["nodes"]) > 0
+    assert "notebook_path" in result
+    assert "total_transformations" in result
+    assert "transformations" in result
 
 
-def test_json_export():
+def test_lineage_graph_build_from_mappings():
+    """Test building graph from mappings."""
     graph = ColumnLineageGraph()
-    graph.add_table("users", ["user_id", "name"])
-    json_output = graph.to_json()
-    parsed = json.loads(json_output)
-    assert "nodes" in parsed
+    mappings = [
+        {"operation": "select", "target": "col1", "sources": ["col1"], "expression": "col1"}
+    ]
+    graph.build_from_mappings(mappings, "source", "target")
+    
+    assert len(graph.nodes) == 2
+    assert len(graph.edges) == 1
+
+
+def test_lineage_graph_to_dict():
+    """Test exporting graph to dictionary."""
+    graph = ColumnLineageGraph()
+    graph.add_column("table1", "col1")
+    result = graph.to_dict()
+    
+    assert "nodes" in result
+    assert "edges" in result
+    assert isinstance(result["nodes"], dict)
+
+
+def test_notebook_analyzer_impact_analysis():
+    """Test column impact analysis."""
+    analyzer = NotebookLineageAnalyzer()
+    analyzer.graph.add_column("table1", "col1")
+    analyzer.graph.add_column("table2", "col2")
+    analyzer.graph.add_transformation("table1.col1", "table2.col2", "select")
+    
+    impact = analyzer.get_column_impact("table2.col2")
+    assert "upstream_dependencies" in impact
+    assert "downstream_impacts" in impact

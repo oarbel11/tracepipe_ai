@@ -1,74 +1,79 @@
+"""Analyze Databricks notebooks for column-level lineage."""
+
 from typing import Dict, List
-import json
 from .spark_parser import SparkColumnParser
 from .lineage_graph import ColumnLineageGraph
 
 
 class NotebookLineageAnalyzer:
+    """Analyzes notebooks to extract column lineage."""
+
     def __init__(self):
         self.parser = SparkColumnParser()
         self.graph = ColumnLineageGraph()
-        self.notebook_metadata = {}
 
-    def analyze_notebook(self, cells: List[Dict]) -> Dict:
-        results = {"cells_analyzed": 0, "operations": 0, "udfs": 0}
+    def analyze_notebook(self, notebook_path: str, cells: List[Dict]) -> Dict:
+        """Analyze notebook cells to extract lineage."""
+        all_mappings = []
         
-        for idx, cell in enumerate(cells):
+        for cell in cells:
             if cell.get("cell_type") == "code":
                 code = cell.get("source", "")
-                if isinstance(code, list):
-                    code = "".join(code)
+                language = cell.get("language", "python")
                 
-                parsed = self.parser.parse_notebook_cell(code, idx)
-                if "error" not in parsed:
-                    self._process_parsed_cell(parsed)
-                    results["cells_analyzed"] += 1
-                    results["operations"] += len(parsed.get("operations", []))
-                    results["udfs"] += len(parsed.get("udfs", []))
+                if language == "python":
+                    mappings = self.parser.parse_python_code(code)
+                elif language == "scala":
+                    mappings = self.parser.parse_scala_code(code)
+                else:
+                    mappings = []
+                
+                all_mappings.extend(mappings)
         
-        return results
+        return {
+            "notebook_path": notebook_path,
+            "total_transformations": len(all_mappings),
+            "transformations": all_mappings
+        }
 
-    def _process_parsed_cell(self, parsed: Dict):
-        for op in parsed.get("operations", []):
-            if op["type"] == "withColumn":
-                cols = op.get("columns", [])
-                if len(cols) >= 2:
-                    target = cols[0].get("name")
-                    sources = [c.get("name") for c in cols[1:]
-                              if c.get("type") == "source"]
-                    self.graph.add_transformation(
-                        sources, target, "withColumn", parsed["cell_id"]
-                    )
-            elif op["type"] == "select":
-                for col in op.get("columns", []):
-                    if col.get("type") == "derived":
-                        deps = col.get("deps", [])
-                        flat_deps = [d[0].get("name") for d in deps if d]
-                        self.graph.add_transformation(
-                            flat_deps, col.get("name"), "select", parsed["cell_id"]
-                        )
+    def build_lineage_graph(self, mappings: List[Dict], 
+                           source_table: str, target_table: str) -> ColumnLineageGraph:
+        """Build a lineage graph from transformation mappings."""
+        graph = ColumnLineageGraph()
+        graph.build_from_mappings(mappings, source_table, target_table)
+        return graph
+
+    def get_column_impact(self, column_id: str) -> Dict:
+        """Analyze impact of changes to a specific column."""
+        upstream = self.graph.get_upstream_columns(column_id)
+        downstream = self.graph.get_downstream_columns(column_id)
+        
+        return {
+            "column": column_id,
+            "upstream_dependencies": upstream,
+            "downstream_impacts": downstream,
+            "total_upstream": len(upstream),
+            "total_downstream": len(downstream)
+        }
+
+    def visualize_lineage(self, output_format: str = "json") -> str:
+        """Generate lineage visualization."""
+        if output_format == "json":
+            return self.graph.to_json()
+        return ""
 
     def analyze_notebook_file(self, file_path: str) -> Dict:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            notebook = json.load(f)
-        
-        cells = notebook.get("cells", [])
-        stats = self.analyze_notebook(cells)
-        stats["notebook"] = file_path
-        return stats
-
-    def get_column_lineage(self, column: str) -> Dict:
-        return self.graph.get_upstream_lineage(column)
-
-    def get_impact_analysis(self, column: str) -> Dict:
-        return self.graph.get_downstream_impact(column)
-
-    def export_lineage_graph(self, output_path: str = None) -> str:
-        viz = self.graph.to_json()
-        if output_path:
-            with open(output_path, 'w') as f:
-                f.write(viz)
-        return viz
-
-    def register_table(self, table_name: str, columns: List[str]):
-        self.graph.add_table(table_name, columns)
+        """Analyze a notebook file directly."""
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            cells = [{"cell_type": "code", "source": content, "language": "python"}]
+            return self.analyze_notebook(file_path, cells)
+        except Exception as e:
+            return {
+                "notebook_path": file_path,
+                "error": str(e),
+                "total_transformations": 0,
+                "transformations": []
+            }

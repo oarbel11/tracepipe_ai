@@ -1,78 +1,83 @@
+"""Parse Spark DataFrame operations to extract column transformations."""
+
 import ast
 import re
 from typing import Dict, List, Set, Tuple
 
 
 class SparkColumnParser:
-    def __init__(self):
-        self.column_deps = {}
-        self.udf_registry = {}
+    """Extracts column-level transformations from Spark code."""
 
-    def parse_notebook_cell(self, code: str, cell_id: int) -> Dict:
+    def __init__(self):
+        self.column_mappings: List[Dict] = []
+
+    def parse_python_code(self, code: str) -> List[Dict]:
+        """Parse Python Spark code and extract column lineage."""
         try:
             tree = ast.parse(code)
-            return self._extract_transformations(tree, cell_id)
+            self._visit_nodes(tree)
+            return self.column_mappings
         except SyntaxError:
-            return {"error": "parse_failed", "cell": cell_id}
+            return []
 
-    def _extract_transformations(self, tree: ast.AST, cell_id: int) -> Dict:
-        result = {"cell_id": cell_id, "operations": [], "udfs": []}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                op = self._analyze_call(node)
-                if op:
-                    result["operations"].append(op)
-            elif isinstance(node, ast.FunctionDef):
-                if self._is_udf(node):
-                    result["udfs"].append(self._extract_udf(node))
-        return result
+    def _visit_nodes(self, node: ast.AST) -> None:
+        """Visit AST nodes to find DataFrame operations."""
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                self._analyze_call(child)
 
-    def _analyze_call(self, node: ast.Call) -> Dict:
+    def _analyze_call(self, node: ast.Call) -> None:
+        """Analyze function calls for Spark operations."""
         func_name = self._get_func_name(node)
-        if func_name in ['select', 'withColumn', 'withColumnRenamed']:
-            return self._extract_column_mapping(func_name, node)
-        elif func_name in ['join', 'union', 'unionByName']:
-            return {"type": func_name, "columns": "all"}
-        return None
-
-    def _extract_column_mapping(self, func: str, node: ast.Call) -> Dict:
-        mapping = {"type": func, "columns": []}
-        for arg in node.args:
-            cols = self._extract_columns(arg)
-            mapping["columns"].extend(cols)
-        return mapping
-
-    def _extract_columns(self, node: ast.AST) -> List[Dict]:
-        columns = []
-        if isinstance(node, ast.Constant):
-            columns.append({"name": node.value, "type": "literal"})
-        elif isinstance(node, ast.Call):
-            func = self._get_func_name(node)
-            if func in ['col', 'column']:
-                if node.args and isinstance(node.args[0], ast.Constant):
-                    columns.append({"name": node.args[0].value, "type": "source"})
-            elif func in ['sum', 'avg', 'count', 'max', 'min', 'concat']:
-                deps = [self._extract_columns(arg) for arg in node.args]
-                columns.append({"name": f"{func}_expr", "type": "derived", "deps": deps})
-        return columns
+        
+        if func_name in ["select", "withColumn", "selectExpr"]:
+            self._extract_select_lineage(node, func_name)
+        elif func_name in ["join", "unionByName"]:
+            self._extract_join_lineage(node, func_name)
 
     def _get_func_name(self, node: ast.Call) -> str:
+        """Extract function name from call node."""
         if isinstance(node.func, ast.Attribute):
             return node.func.attr
         elif isinstance(node.func, ast.Name):
             return node.func.id
         return ""
 
-    def _is_udf(self, node: ast.FunctionDef) -> bool:
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Name) and 'udf' in decorator.id:
-                return True
-            elif isinstance(decorator, ast.Call):
-                name = self._get_func_name(decorator)
-                if 'udf' in name:
-                    return True
-        return False
+    def _extract_select_lineage(self, node: ast.Call, op: str) -> None:
+        """Extract lineage from select/withColumn operations."""
+        for arg in node.args:
+            if isinstance(arg, ast.Constant):
+                col_name = arg.value
+                self.column_mappings.append({
+                    "operation": op,
+                    "target": col_name,
+                    "sources": [col_name],
+                    "expression": col_name
+                })
 
-    def _extract_udf(self, node: ast.FunctionDef) -> Dict:
-        params = [arg.arg for arg in node.args.args]
-        return {"name": node.name, "params": params, "line": node.lineno}
+    def _extract_join_lineage(self, node: ast.Call, op: str) -> None:
+        """Extract lineage from join operations."""
+        self.column_mappings.append({
+            "operation": op,
+            "target": "*",
+            "sources": ["left.*", "right.*"],
+            "expression": f"{op} operation"
+        })
+
+    def parse_scala_code(self, code: str) -> List[Dict]:
+        """Parse Scala Spark code using regex patterns."""
+        patterns = [
+            (r'\.select\(([^)]+)\)', 'select'),
+            (r'\.withColumn\("([^"]+)"', 'withColumn'),
+        ]
+        
+        for pattern, op in patterns:
+            for match in re.finditer(pattern, code):
+                self.column_mappings.append({
+                    "operation": op,
+                    "target": match.group(1).strip('"'),
+                    "sources": [match.group(1).strip('"')],
+                    "expression": match.group(0)
+                })
+        
+        return self.column_mappings

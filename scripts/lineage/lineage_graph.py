@@ -1,82 +1,74 @@
-import networkx as nx
+"""Build and manage column lineage graphs."""
+
 from typing import Dict, List, Set, Tuple
 import json
 
 
 class ColumnLineageGraph:
+    """Represents column-level lineage as a directed graph."""
+
     def __init__(self):
-        self.graph = nx.DiGraph()
-        self.tables = {}
-        self.column_metadata = {}
+        self.nodes: Dict[str, Dict] = {}
+        self.edges: List[Tuple[str, str, Dict]] = []
 
-    def add_table(self, table_name: str, columns: List[str]):
-        self.tables[table_name] = columns
-        for col in columns:
-            node_id = f"{table_name}.{col}"
-            self.graph.add_node(node_id, table=table_name, column=col, type="base")
+    def add_column(self, table: str, column: str, metadata: Dict = None) -> str:
+        """Add a column node to the graph."""
+        node_id = f"{table}.{column}"
+        self.nodes[node_id] = {
+            "table": table,
+            "column": column,
+            "metadata": metadata or {}
+        }
+        return node_id
 
-    def add_transformation(self, source_cols: List[str], target_col: str,
-                          operation: str, cell_id: int):
-        target_node = target_col
-        if "." not in target_col:
-            target_node = f"temp.{target_col}"
-        
-        self.graph.add_node(target_node, column=target_col,
-                           operation=operation, cell=cell_id, type="derived")
-        
-        for src in source_cols:
-            src_node = src if "." in src else f"temp.{src}"
-            if not self.graph.has_node(src_node):
-                self.graph.add_node(src_node, column=src, type="intermediate")
-            self.graph.add_edge(src_node, target_node,
-                              operation=operation, cell=cell_id)
+    def add_transformation(self, source: str, target: str, 
+                          operation: str, expression: str = "") -> None:
+        """Add a transformation edge between columns."""
+        self.edges.append((source, target, {
+            "operation": operation,
+            "expression": expression
+        }))
 
-    def get_upstream_lineage(self, column: str, max_depth: int = 10) -> Dict:
-        node = column if "." in column else f"temp.{column}"
-        if not self.graph.has_node(node):
-            return {"error": "column_not_found", "column": column}
-        
+    def get_upstream_columns(self, column_id: str) -> List[str]:
+        """Get all upstream columns for a given column."""
         upstream = []
-        visited = set()
-        self._dfs_upstream(node, upstream, visited, 0, max_depth)
-        return {"column": column, "upstream": upstream, "count": len(upstream)}
+        for source, target, _ in self.edges:
+            if target == column_id:
+                upstream.append(source)
+        return upstream
 
-    def _dfs_upstream(self, node: str, result: List, visited: Set,
-                     depth: int, max_depth: int):
-        if depth >= max_depth or node in visited:
-            return
-        visited.add(node)
-        
-        for pred in self.graph.predecessors(node):
-            edge_data = self.graph.get_edge_data(pred, node)
-            result.append({
-                "from": pred,
-                "to": node,
-                "operation": edge_data.get("operation", "unknown"),
-                "cell": edge_data.get("cell", -1),
-                "depth": depth
-            })
-            self._dfs_upstream(pred, result, visited, depth + 1, max_depth)
+    def get_downstream_columns(self, column_id: str) -> List[str]:
+        """Get all downstream columns for a given column."""
+        downstream = []
+        for source, target, _ in self.edges:
+            if source == column_id:
+                downstream.append(target)
+        return downstream
 
-    def get_downstream_impact(self, column: str) -> Dict:
-        node = column if "." in column else f"temp.{column}"
-        if not self.graph.has_node(node):
-            return {"error": "column_not_found"}
-        
-        downstream = list(nx.descendants(self.graph, node))
-        return {"column": column, "impacted": downstream, "count": len(downstream)}
+    def build_from_mappings(self, mappings: List[Dict], 
+                           source_table: str, target_table: str) -> None:
+        """Build graph from column mappings."""
+        for mapping in mappings:
+            target_col = self.add_column(target_table, mapping["target"])
+            
+            for source_col_name in mapping["sources"]:
+                source_col = self.add_column(source_table, source_col_name)
+                self.add_transformation(
+                    source_col, target_col,
+                    mapping["operation"],
+                    mapping.get("expression", "")
+                )
 
-    def export_visualization(self) -> Dict:
-        nodes = []
-        edges = []
-        
-        for node, data in self.graph.nodes(data=True):
-            nodes.append({"id": node, **data})
-        
-        for src, tgt, data in self.graph.edges(data=True):
-            edges.append({"source": src, "target": tgt, **data})
-        
-        return {"nodes": nodes, "edges": edges}
+    def to_dict(self) -> Dict:
+        """Export graph as dictionary."""
+        return {
+            "nodes": self.nodes,
+            "edges": [
+                {"source": s, "target": t, "metadata": m}
+                for s, t, m in self.edges
+            ]
+        }
 
     def to_json(self) -> str:
-        return json.dumps(self.export_visualization(), indent=2)
+        """Export graph as JSON string."""
+        return json.dumps(self.to_dict(), indent=2)
