@@ -1,78 +1,74 @@
-"""Tests for Historical Lineage & Time Travel feature."""
-
 import pytest
+import os
+import tempfile
 from datetime import datetime, timedelta
-import json
+from pathlib import Path
 
 from tracepipe_ai.lineage_history import LineageHistoryStorage
 
 
 @pytest.fixture
-def storage():
-    """Create in-memory storage for testing."""
-    store = LineageHistoryStorage(":memory:")
-    yield store
-    store.close()
+def temp_db():
+    """Create a temporary database for testing."""
+    fd, path = tempfile.mkstemp(suffix=".duckdb")
+    os.close(fd)
+    yield path
+    if os.path.exists(path):
+        os.unlink(path)
 
 
-def test_store_and_retrieve_lineage(storage):
-    """Test storing and retrieving lineage snapshots."""
-    asset_id = "catalog.schema.table1"
-    lineage_data = {
-        "upstream": ["catalog.schema.source1"],
-        "downstream": ["catalog.schema.target1"]
-    }
-    metadata = {"user": "test_user", "operation": "CREATE"}
-
-    storage.store_lineage(asset_id, "table", lineage_data, metadata)
-
-    history = storage.get_lineage_history(asset_id)
-    assert len(history) == 1
-    assert history[0]["asset_id"] == asset_id
-    assert history[0]["lineage_data"] == lineage_data
-    assert history[0]["metadata"] == metadata
+@pytest.fixture
+def storage(temp_db):
+    """Create a LineageHistoryStorage instance."""
+    return LineageHistoryStorage(db_path=temp_db)
 
 
-def test_time_travel_query(storage):
-    """Test retrieving lineage at specific point in time."""
-    asset_id = "catalog.schema.table2"
-    now = datetime.utcnow()
-
-    lineage_v1 = {"upstream": ["source1"], "downstream": []}
-    storage.store_lineage(asset_id, "table", lineage_v1)
-
-    future = now + timedelta(seconds=2)
-    lineage_v2 = {"upstream": ["source1", "source2"], "downstream": []}
-    storage.store_lineage(asset_id, "table", lineage_v2)
-
-    past_lineage = storage.get_lineage_at_time(asset_id, now + timedelta(seconds=1))
-    assert past_lineage == lineage_v1
-
-    current_lineage = storage.get_lineage_at_time(asset_id, future + timedelta(seconds=1))
-    assert current_lineage == lineage_v2
+def test_store_lineage(storage):
+    """Test storing lineage records."""
+    lineage_id = storage.store_lineage(
+        source="table_a",
+        target="table_b",
+        metadata={"operation": "transform"}
+    )
+    assert lineage_id > 0
 
 
-def test_lineage_history_time_range(storage):
-    """Test filtering lineage history by time range."""
-    asset_id = "catalog.schema.table3"
-    base_time = datetime.utcnow()
-
-    for i in range(5):
-        lineage = {"upstream": [f"source{i}"], "downstream": []}
-        storage.store_lineage(asset_id, "table", lineage)
-
-    all_history = storage.get_lineage_history(asset_id)
-    assert len(all_history) == 5
-
-    start_time = base_time + timedelta(seconds=2)
-    filtered = storage.get_lineage_history(asset_id, start_time=start_time)
-    assert len(filtered) >= 1
+def test_query_all_lineage(storage):
+    """Test querying all lineage records."""
+    storage.store_lineage("table_a", "table_b", {"op": "join"})
+    storage.store_lineage("table_b", "table_c", {"op": "filter"})
+    
+    results = storage.query_lineage()
+    assert len(results) == 2
+    assert results[0]["source_table"] in ["table_a", "table_b"]
 
 
-def test_nonexistent_asset(storage):
-    """Test querying nonexistent asset returns None."""
-    result = storage.get_lineage_at_time("nonexistent", datetime.utcnow())
-    assert result is None
+def test_query_by_table(storage):
+    """Test querying lineage by table name."""
+    storage.store_lineage("table_a", "table_b", {})
+    storage.store_lineage("table_c", "table_d", {})
+    
+    results = storage.query_lineage(table="table_a")
+    assert len(results) == 1
+    assert results[0]["source_table"] == "table_a"
 
-    history = storage.get_lineage_history("nonexistent")
-    assert history == []
+
+def test_query_by_date_range(storage):
+    """Test querying lineage by date range."""
+    now = datetime.now()
+    storage.store_lineage("table_a", "table_b", {})
+    
+    results = storage.query_lineage(
+        start_date=now - timedelta(days=1),
+        end_date=now + timedelta(days=1)
+    )
+    assert len(results) == 1
+
+
+def test_metadata_persistence(storage):
+    """Test that metadata is correctly stored and retrieved."""
+    metadata = {"user": "test", "pipeline": "etl_001"}
+    storage.store_lineage("src", "dst", metadata)
+    
+    results = storage.query_lineage()
+    assert results[0]["metadata"] == metadata
