@@ -1,8 +1,5 @@
+flask
+databricks-sdk
+pytest
+pytest-mock
 duckdb
-pandas
-mcp
-gitpython
-networkx
-databricks-sql-connector
-sqlparse
-pyyaml

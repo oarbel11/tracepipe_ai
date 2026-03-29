@@ -1,80 +1,92 @@
+"""Tests for Advanced Impact Analysis & Proactive Change Alerts."""
 import pytest
-import duckdb
-from scripts.peer_review.change_simulator import ChangeSimulator, ChangeImpact
-from scripts.peer_review.proactive_alerts import AlertManager, Alert
-from scripts.peer_review.impact_visualizer import ImpactVisualizer
+from src.impact_analysis import ChangeSimulator, AlertSystem
+
 
 @pytest.fixture
-def db_conn():
-    conn = duckdb.connect(':memory:')
-    conn.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)")
-    conn.execute("CREATE VIEW test_view AS SELECT * FROM test_table")
-    return conn
+def lineage_graph():
+    return {
+        "sales_table": {
+            "tables": ["revenue_table", "analytics_table"],
+            "dashboards": ["sales_dashboard"],
+            "models": ["forecast_model"]
+        },
+        "users_table": {
+            "tables": ["user_analytics"],
+            "dashboards": [],
+            "models": []
+        }
+    }
+
 
 @pytest.fixture
-def simulator(db_conn):
-    return ChangeSimulator(db_conn)
+def simulator(lineage_graph):
+    return ChangeSimulator(lineage_graph)
+
 
 @pytest.fixture
-def alert_manager():
-    return AlertManager()
+def alert_system():
+    return AlertSystem()
 
-@pytest.fixture
-def visualizer():
-    return ImpactVisualizer()
 
-def test_simulate_schema_change(simulator):
-    changes = {'drop_column': 'name'}
-    impacts = simulator.simulate_schema_change('test_table', changes)
+def test_simulate_column_removal(simulator):
+    """Test simulating column removal impact."""
+    changes = {"column_removed": "price"}
+    result = simulator.simulate_schema_change("sales_table", changes)
     
-    assert len(impacts) > 0
-    assert impacts[0].change_type == 'drop_column'
-    assert impacts[0].affected_object == 'test_table'
-    assert impacts[0].severity in ['low', 'medium', 'high', 'critical']
+    assert result["table"] == "sales_table"
+    assert result["changes"] == changes
+    assert len(result["affected_tables"]) == 2
+    assert "revenue_table" in result["affected_tables"]
+    assert result["risk_level"] == "medium"
+    assert "timestamp" in result
 
-def test_type_change_compatibility(simulator):
-    changes = {'type_change': {'column': 'id', 'old_type': 'INTEGER', 'new_type': 'BIGINT'}}
-    impacts = simulator.simulate_schema_change('test_table', changes)
-    
-    assert len(impacts) > 0
-    assert impacts[0].severity == 'low'
 
-def test_alert_registration(alert_manager):
-    def test_condition(change):
-        return getattr(change, 'severity', '') == 'critical'
+def test_simulate_type_change(simulator):
+    """Test simulating data type change."""
+    changes = {"type_changed": {"amount": "string_to_decimal"}}
+    result = simulator.simulate_schema_change("sales_table", changes)
     
-    alert_manager.register_rule('critical_change', test_condition, 'critical', ['team@example.com'])
-    assert len(alert_manager.alert_rules) == 1
+    assert result["risk_level"] == "medium"
+    assert len(result["affected_dashboards"]) == 1
+    assert len(result["affected_models"]) == 1
 
-def test_alert_evaluation(alert_manager):
-    def critical_condition(change):
-        return getattr(change, 'severity', '') == 'critical'
-    
-    alert_manager.register_rule('critical', critical_condition, 'critical', ['admin@example.com'])
-    
-    mock_change = ChangeImpact('drop_column', 'table1', 'table', 'critical', 5, {})
-    alerts = alert_manager.evaluate_changes([mock_change])
-    
-    assert len(alerts) > 0
-    assert alerts[0].severity == 'critical'
 
-def test_visualization_graph(visualizer):
-    mock_impacts = [
-        ChangeImpact('drop_column', 'table1', 'table', 'high', 2, {'downstream': {'views': ['view1']}})
-    ]
+def test_simulate_column_addition(simulator):
+    """Test simulating column addition."""
+    changes = {"column_added": "new_field"}
+    result = simulator.simulate_schema_change("sales_table", changes)
     
-    graph = visualizer.build_impact_graph('root_table', mock_impacts)
-    assert len(graph.nodes) >= 2
-    assert len(graph.edges) >= 1
+    assert result["risk_level"] == "low"
 
-def test_blast_radius_calculation(visualizer):
-    mock_impacts = [
-        ChangeImpact('drop_column', 'table1', 'table', 'high', 3, {'downstream': {'views': ['view1', 'view2']}})
-    ]
+
+def test_create_alert(alert_system, simulator):
+    """Test alert creation from impact analysis."""
+    changes = {"column_removed": "important_field"}
+    impact = simulator.simulate_schema_change("sales_table", changes)
     
-    visualizer.build_impact_graph('root', mock_impacts)
-    radius = visualizer.calculate_blast_radius('root')
+    alert = alert_system.create_alert(impact)
     
-    assert 'total_affected' in radius
-    assert 'by_severity' in radius
-    assert radius['total_affected'] >= 0
+    assert alert["id"] == 1
+    assert alert["table"] == "sales_table"
+    assert alert["status"] == "pending"
+    assert alert["risk_level"] in ["low", "medium", "high"]
+
+
+def test_get_alerts(alert_system, simulator):
+    """Test retrieving alerts."""
+    impact = simulator.simulate_schema_change("sales_table", {"column_removed": "x"})
+    alert_system.create_alert(impact)
+    
+    alerts = alert_system.get_alerts()
+    assert len(alerts) == 1
+    
+    pending = alert_system.get_alerts(status="pending")
+    assert len(pending) == 1
+
+
+def test_subscribe_to_entity(alert_system):
+    """Test subscribing to entity alerts."""
+    alert_system.register_subscriber("sales_table", ["user@example.com"])
+    assert "sales_table" in alert_system.subscribers
+    assert alert_system.subscribers["sales_table"] == ["user@example.com"]
