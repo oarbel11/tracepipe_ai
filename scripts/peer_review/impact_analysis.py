@@ -1,94 +1,72 @@
-import networkx as nx
+"""Impact analysis engine for interactive dependency visualization."""
 from typing import Dict, List, Set, Optional, Any
+from dataclasses import dataclass
+
+
+@dataclass
+class ImpactNode:
+    """Node in impact analysis graph."""
+    asset_id: str
+    asset_type: str
+    depth: int
+    metadata: Dict[str, Any]
 
 
 class ImpactAnalysisEngine:
-    def __init__(self, lineage_graph: nx.DiGraph):
-        self.graph = lineage_graph
-        self.cache = {}
+    """Engine for computing downstream dependencies."""
 
-    def analyze_impact(
+    def __init__(self, lineage_graph: Dict[str, Any]):
+        """Initialize with lineage graph."""
+        self.lineage_graph = lineage_graph
+        self.edges = lineage_graph.get("edges", [])
+        self.nodes = {n["id"]: n for n in lineage_graph.get("nodes", [])}
+
+    def compute_downstream_impact(
         self,
         asset_id: str,
         filters: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        cache_key = (asset_id, str(filters))
-        if cache_key in self.cache:
-            return self.cache[cache_key]
+    ) -> List[ImpactNode]:
+        """Compute downstream dependencies with optional filters."""
+        visited: Set[str] = set()
+        result: List[ImpactNode] = []
+        queue: List[tuple] = [(asset_id, 0)]
 
-        if asset_id not in self.graph:
-            return {"error": "Asset not found", "impacted_assets": []}
+        while queue:
+            current_id, depth = queue.pop(0)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
 
-        downstream = self._get_downstream_assets(asset_id)
-        filtered = self._apply_filters(downstream, filters or {})
-        impact_details = self._compute_impact_details(asset_id, filtered)
+            node = self.nodes.get(current_id)
+            if not node:
+                continue
 
-        result = {
-            "source_asset": asset_id,
-            "total_impacted": len(filtered),
-            "impacted_assets": filtered,
-            "impact_layers": impact_details["layers"],
-            "critical_paths": impact_details["critical_paths"],
-            "filters_applied": filters or {}
-        }
-        self.cache[cache_key] = result
+            if self._matches_filters(node, filters):
+                result.append(ImpactNode(
+                    asset_id=current_id,
+                    asset_type=node.get("type", "unknown"),
+                    depth=depth,
+                    metadata=node.get("metadata", {})
+                ))
+
+            for edge in self.edges:
+                if edge["source"] == current_id:
+                    queue.append((edge["target"], depth + 1))
+
         return result
 
-    def _get_downstream_assets(self, asset_id: str) -> List[Dict[str, Any]]:
-        descendants = nx.descendants(self.graph, asset_id)
-        assets = []
-        for node in descendants:
-            node_data = self.graph.nodes[node]
-            assets.append({
-                "id": node,
-                "type": node_data.get("type", "unknown"),
-                "tags": node_data.get("tags", []),
-                "owner": node_data.get("owner", "unassigned"),
-                "quality_status": node_data.get("quality_status", "unknown"),
-                "distance": nx.shortest_path_length(self.graph, asset_id, node)
-            })
-        return assets
-
-    def _apply_filters(
-        self,
-        assets: List[Dict[str, Any]],
-        filters: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        filtered = assets
-        if "tags" in filters:
-            tag_filter = set(filters["tags"])
-            filtered = [a for a in filtered if tag_filter & set(a["tags"])]
-        if "owner" in filters:
-            filtered = [a for a in filtered if a["owner"] == filters["owner"]]
-        if "quality_status" in filters:
-            filtered = [
-                a for a in filtered
-                if a["quality_status"] == filters["quality_status"]
-            ]
-        return filtered
-
-    def _compute_impact_details(
-        self,
-        source: str,
-        assets: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        layers = {}
-        for asset in assets:
-            dist = asset["distance"]
-            layers.setdefault(dist, []).append(asset["id"])
-
-        critical_paths = self._find_critical_paths(source, assets)
-        return {"layers": layers, "critical_paths": critical_paths}
-
-    def _find_critical_paths(
-        self,
-        source: str,
-        assets: List[Dict[str, Any]]
-    ) -> List[List[str]]:
-        critical = []
-        for asset in assets:
-            if "PII" in asset["tags"] or asset["quality_status"] == "critical":
-                paths = list(nx.all_simple_paths(self.graph, source, asset["id"]))
-                if paths:
-                    critical.append(paths[0])
-        return critical[:5]
+    def _matches_filters(self, node: Dict, filters: Optional[Dict]) -> bool:
+        """Check if node matches filter criteria."""
+        if not filters:
+            return True
+        metadata = node.get("metadata", {})
+        for key, value in filters.items():
+            if key == "tags" and value:
+                node_tags = metadata.get("tags", [])
+                if not any(tag in node_tags for tag in value):
+                    return False
+            elif key == "owner" and metadata.get("owner") != value:
+                return False
+            elif key == "quality_status" and metadata.get("quality_status") != value:
+                return False
+        return True

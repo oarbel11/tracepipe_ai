@@ -1,21 +1,20 @@
-"""
-Senior Peer Review System
-
-Predicts technical failures from code changes.
-"""
-
-from .semantic_delta import SemanticDeltaExtractor
-from .blast_radius import ImpactAnalysisMapper
-from .technical_validator import TechnicalValidator
-from .peer_review import PeerReviewOrchestrator
-from .impact_analysis import ImpactAnalysisEngine
-from .governance_policy import GovernancePolicyEngine
+"""Peer review automation package."""
+from scripts.peer_review.llm_reviewer import LLMReviewer
+from scripts.peer_review.impact_analysis import (
+    ImpactAnalysisEngine,
+    ImpactNode
+)
+from scripts.peer_review.governance_policy import (
+    GovernancePolicyEngine,
+    GovernancePolicy,
+    PolicyViolation
+)
 
 __all__ = [
-    'SemanticDeltaExtractor',
-    'BlastRadiusMapper',
-    'TechnicalValidator',
-    'PeerReviewOrchestrator',
-    'ImpactAnalysisEngine',
-    'GovernancePolicyEngine',
+    "LLMReviewer",
+    "ImpactAnalysisEngine",
+    "ImpactNode",
+    "GovernancePolicyEngine",
+    "GovernancePolicy",
+    "PolicyViolation",
 ]

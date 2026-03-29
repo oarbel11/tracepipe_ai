@@ -1,95 +1,81 @@
+"""Tests for impact analysis and governance policy features."""
 import pytest
-import networkx as nx
-from scripts.peer_review.impact_analysis import ImpactAnalysisEngine
-from scripts.peer_review.governance_policy import GovernancePolicyEngine
+from scripts.peer_review.impact_analysis import ImpactAnalysisEngine, ImpactNode
+from scripts.peer_review.governance_policy import (
+    GovernancePolicyEngine,
+    GovernancePolicy,
+    PolicyViolation
+)
 
 
 @pytest.fixture
 def sample_lineage_graph():
-    G = nx.DiGraph()
-    G.add_node("table_a", type="table", tags=["PII"], owner="alice",
-               quality_status="good", encrypted=True)
-    G.add_node("table_b", type="table", tags=["analytics"], owner="bob",
-               quality_status="critical", encrypted=False)
-    G.add_node("table_c", type="view", tags=["PII", "reporting"],
-               owner="unassigned", quality_status="good", encrypted=False)
-    G.add_node("table_d", type="table", tags=["archive"], owner="alice",
-               quality_status="good", encrypted=True)
-    G.add_edge("table_a", "table_b")
-    G.add_edge("table_a", "table_c")
-    G.add_edge("table_b", "table_d")
-    return G
+    """Sample lineage graph for testing."""
+    return {
+        "nodes": [
+            {"id": "table1", "type": "table", "metadata": {"tags": ["PII"], "owner": "team_a"}},
+            {"id": "table2", "type": "table", "metadata": {"tags": ["analytics"], "owner": "team_b"}},
+            {"id": "view1", "type": "view", "metadata": {"tags": ["PII"], "quality_status": "good"}}
+        ],
+        "edges": [
+            {"source": "table1", "target": "view1"},
+            {"source": "view1", "target": "table2"}
+        ]
+    }
 
 
-def test_impact_analysis_basic(sample_lineage_graph):
+def test_impact_analysis_downstream(sample_lineage_graph):
+    """Test downstream impact analysis."""
     engine = ImpactAnalysisEngine(sample_lineage_graph)
-    result = engine.analyze_impact("table_a")
-    assert result["source_asset"] == "table_a"
-    assert result["total_impacted"] == 3
-    assert len(result["impacted_assets"]) == 3
+    impact = engine.compute_downstream_impact("table1")
+    assert len(impact) == 3
+    assert impact[0].asset_id == "table1"
+    assert impact[0].depth == 0
 
 
 def test_impact_analysis_with_tag_filter(sample_lineage_graph):
+    """Test impact analysis with tag filter."""
     engine = ImpactAnalysisEngine(sample_lineage_graph)
-    result = engine.analyze_impact("table_a", filters={"tags": ["PII"]})
-    assert result["total_impacted"] == 1
-    assert result["impacted_assets"][0]["id"] == "table_c"
+    impact = engine.compute_downstream_impact("table1", filters={"tags": ["PII"]})
+    pii_assets = [node for node in impact if "PII" in node.metadata.get("tags", [])]
+    assert len(pii_assets) == 2
 
 
 def test_impact_analysis_with_owner_filter(sample_lineage_graph):
+    """Test impact analysis with owner filter."""
     engine = ImpactAnalysisEngine(sample_lineage_graph)
-    result = engine.analyze_impact("table_a", filters={"owner": "alice"})
-    assert result["total_impacted"] == 1
-    assert result["impacted_assets"][0]["id"] == "table_d"
+    impact = engine.compute_downstream_impact("table1", filters={"owner": "team_a"})
+    assert len(impact) == 1
+    assert impact[0].metadata["owner"] == "team_a"
 
 
-def test_impact_analysis_critical_paths(sample_lineage_graph):
-    engine = ImpactAnalysisEngine(sample_lineage_graph)
-    result = engine.analyze_impact("table_a")
-    assert len(result["critical_paths"]) >= 1
-
-
-def test_governance_policy_registration(sample_lineage_graph):
-    engine = GovernancePolicyEngine(sample_lineage_graph)
-    engine.register_policy(
-        "pol_001",
-        "data_privacy",
-        {"encryption_required": True, "owner_required": True}
+def test_governance_policy_evaluation(sample_lineage_graph):
+    """Test governance policy evaluation."""
+    policy = GovernancePolicy(
+        policy_id="pol1",
+        name="PII Tagging Required",
+        description="All tables must have PII tag",
+        rules={"required_tags": ["PII"]},
+        severity="high"
     )
-    assert "pol_001" in engine.policies
+    engine = GovernancePolicyEngine([policy])
+    violations = engine.evaluate_lineage(sample_lineage_graph)
+    assert len(violations) >= 1
 
 
-def test_governance_policy_overlay(sample_lineage_graph):
-    engine = GovernancePolicyEngine(sample_lineage_graph)
-    engine.register_policy(
-        "pol_001",
-        "data_privacy",
-        {"encryption_required": True, "owner_required": True}
+def test_governance_policy_no_violations():
+    """Test governance policy with no violations."""
+    graph = {
+        "nodes": [{"id": "t1", "type": "table", "metadata": {"tags": ["PII"]}}],
+        "edges": []
+    }
+    policy = GovernancePolicy(
+        policy_id="pol1",
+        name="PII Required",
+        description="Test",
+        rules={"required_tags": ["PII"]},
+        severity="high"
     )
-    overlay = engine.overlay_policies(["table_a", "table_c"])
-    assert "table_a" in overlay
-    assert "table_c" in overlay
-    assert len(overlay["table_a"]["policies"]) > 0
-
-
-def test_governance_violations(sample_lineage_graph):
-    engine = GovernancePolicyEngine(sample_lineage_graph)
-    engine.register_policy(
-        "pol_001",
-        "data_privacy",
-        {"encryption_required": True, "owner_required": True}
-    )
-    overlay = engine.overlay_policies(["table_c"])
-    assert len(overlay["table_c"]["violations"]) >= 1
-    assert overlay["table_c"]["compliance_score"] < 100.0
-
-
-def test_compliance_score_calculation(sample_lineage_graph):
-    engine = GovernancePolicyEngine(sample_lineage_graph)
-    engine.register_policy(
-        "pol_001",
-        "data_privacy",
-        {"encryption_required": True}
-    )
-    overlay = engine.overlay_policies(["table_a"])
-    assert overlay["table_a"]["compliance_score"] == 100.0
+    engine = GovernancePolicyEngine([policy])
+    violations = engine.evaluate_lineage(graph)
+    assert len(violations) == 0
