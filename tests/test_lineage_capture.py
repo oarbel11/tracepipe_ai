@@ -1,4 +1,4 @@
-"""Tests for lineage capture functionality."""
+"""Unit tests for lineage capture functionality."""
 
 import pytest
 from tracepipe_ai.lineage_capture import (
@@ -8,60 +8,79 @@ from tracepipe_ai.lineage_capture import (
 )
 
 
-def test_unmanaged_capture_write_operation():
-    capture = UnmanagedCapture()
-    result = capture.capture_write_operation(
-        path='s3://bucket/path/data.parquet',
-        source_tables=['table1', 'table2'],
-        columns=['col1', 'col2']
-    )
-    assert result is not None
-    assert result['path'] == 's3://bucket/path/data.parquet'
-    assert len(result['source_tables']) == 2
+class TestUnmanagedCapture:
+    """Test cases for UnmanagedCapture."""
+
+    def test_track_write_operation(self):
+        capture = UnmanagedCapture()
+        capture.track_write(
+            "s3://bucket/data.parquet",
+            "catalog.schema.source_table",
+            {"format": "parquet"}
+        )
+        ops = capture.get_operations()
+        assert len(ops) == 1
+        assert ops[0]["type"] == "write"
+        assert ops[0]["path"] == "s3://bucket/data.parquet"
+
+    def test_track_read_operation(self):
+        capture = UnmanagedCapture()
+        capture.track_read(
+            "s3://bucket/input.csv",
+            "catalog.schema.target_table",
+            {"format": "csv"}
+        )
+        ops = capture.get_operations()
+        assert len(ops) == 1
+        assert ops[0]["type"] == "read"
+
+    def test_filter_by_path(self):
+        capture = UnmanagedCapture()
+        capture.track_write("s3://bucket/file1.parquet", "table1", {})
+        capture.track_write("s3://bucket/file2.parquet", "table2", {})
+        ops = capture.get_operations("s3://bucket/file1.parquet")
+        assert len(ops) == 1
+        assert ops[0]["path"] == "s3://bucket/file1.parquet"
 
 
-def test_unmanaged_capture_get_lineage():
-    capture = UnmanagedCapture()
-    capture.capture_write_operation(
-        path='s3://bucket/data.parquet',
-        source_tables=['table1']
-    )
-    lineage = capture.get_lineage('s3://bucket/data.parquet')
-    assert len(lineage) == 1
+class TestUDFMapper:
+    """Test cases for UDFMapper."""
+
+    def test_register_udf(self):
+        mapper = UDFMapper()
+        udf_code = "def transform(row): return row['price'] * 1.1"
+        mapper.register_udf("price_adjuster", udf_code, {})
+        mappings = mapper.get_column_mappings("price_adjuster")
+        assert "price" in mappings
+
+    def test_parse_multiple_columns(self):
+        mapper = UDFMapper()
+        code = "def calc(df): return df['col1'] + df['col2']"
+        mapper.register_udf("calculator", code, {})
+        mappings = mapper.get_column_mappings("calculator")
+        assert "col1" in mappings
+        assert "col2" in mappings
+
+    def test_unknown_udf(self):
+        mapper = UDFMapper()
+        mappings = mapper.get_column_mappings("nonexistent")
+        assert mappings == []
 
 
-def test_udf_mapper_analyze_udf():
-    mapper = UDFMapper()
-    def sample_udf(x):
-        return x * 2
-    mapper.register_udf('sample', sample_udf)
-    result = mapper.analyze_udf('sample')
-    assert 'x' in result['inputs']
+class TestLineageTracker:
+    """Test cases for LineageTracker."""
 
+    def test_record_lineage(self):
+        tracker = LineageTracker()
+        tracker.record_lineage(
+            "source_table", "target_table", ["col1", "col2"], "transform"
+        )
+        lineage = tracker.get_lineage("source_table")
+        assert len(lineage) == 1
+        assert lineage[0]["operation"] == "transform"
 
-def test_udf_mapper_register_udf():
-    mapper = UDFMapper()
-    def test_func(a, b):
-        return a + b
-    result = mapper.register_udf('test', test_func)
-    assert result['name'] == 'test'
-    assert 'test' in mapper.udf_registry
-
-
-def test_lineage_tracker_track_operation():
-    tracker = LineageTracker()
-    result = tracker.track_operation(
-        'unmanaged_write',
-        {'path': 's3://bucket/test.parquet', 'source_tables': ['table1']}
-    )
-    assert result is not None
-
-
-def test_lineage_tracker_export():
-    tracker = LineageTracker()
-    tracker.track_operation(
-        'unmanaged_write',
-        {'path': 's3://bucket/test.parquet', 'source_tables': ['table1']}
-    )
-    export = tracker.export_lineage()
-    assert export['total_operations'] == 1
+    def test_get_lineage_for_target(self):
+        tracker = LineageTracker()
+        tracker.record_lineage("src", "tgt", ["col1"], "copy")
+        lineage = tracker.get_lineage("tgt")
+        assert len(lineage) == 1
