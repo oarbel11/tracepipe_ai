@@ -1,85 +1,90 @@
 import pytest
-import networkx as nx
 from datetime import datetime, timedelta
-from scripts.data_quality.quality_monitor import DataQualityMonitor, QualityIssue
-from scripts.data_quality.lineage_integrator import LineageQualityIntegrator
+from tracepipe_ai.data_quality_monitor import DataQualityMonitor
+from tracepipe_ai.lineage_quality_integrator import LineageQualityIntegrator
+from tracepipe_ai.quality_alerts import QualityAlertManager
 
 
-@pytest.fixture
-def quality_monitor():
+def test_freshness_check():
     monitor = DataQualityMonitor()
-    monitor.conn.execute("""
-        CREATE TABLE test_table (
-            id INTEGER,
-            timestamp TIMESTAMP
-        )
-    """)
-    old_date = datetime.now() - timedelta(hours=48)
-    monitor.conn.execute(f"""
-        INSERT INTO test_table VALUES (1, '{old_date}')
-    """)
-    return monitor
+    fresh_time = datetime.now() - timedelta(hours=1)
+    stale_time = datetime.now() - timedelta(hours=30)
+
+    fresh_metric = monitor.check_freshness("table_a", fresh_time, 24)
+    assert fresh_metric.status == "healthy"
+
+    stale_metric = monitor.check_freshness("table_b", stale_time, 24)
+    assert stale_metric.status == "stale"
 
 
-@pytest.fixture
-def lineage_graph():
-    graph = nx.DiGraph()
-    graph.add_node('source_table')
-    graph.add_node('intermediate_table')
-    graph.add_node('final_table')
-    graph.add_edge('source_table', 'intermediate_table')
-    graph.add_edge('intermediate_table', 'final_table')
-    return graph
+def test_volume_check():
+    monitor = DataQualityMonitor()
+    healthy = monitor.check_volume("table_a", 1000, 100)
+    assert healthy.status == "healthy"
+
+    anomaly = monitor.check_volume("table_b", 50, 100)
+    assert anomaly.status == "anomaly"
 
 
-def test_freshness_check(quality_monitor):
-    issue = quality_monitor.check_freshness('test_table', max_age_hours=24)
-    assert issue is not None
-    assert issue.issue_type == 'freshness'
-    assert issue.severity in ['high', 'medium']
+def test_schema_check():
+    monitor = DataQualityMonitor()
+    expected = ["id", "name", "email"]
+    current_match = ["id", "name", "email"]
+    current_drift = ["id", "name", "phone"]
+
+    match = monitor.check_schema("table_a", current_match, expected)
+    assert match.status == "healthy"
+
+    drift = monitor.check_schema("table_b", current_drift, expected)
+    assert drift.status == "drift"
 
 
-def test_quality_graph_integration(quality_monitor, lineage_graph):
-    integrator = LineageQualityIntegrator(quality_monitor)
-    
-    issues = [
-        QualityIssue(
-            asset_name='source_table',
-            issue_type='freshness',
-            description='Data is stale',
-            severity='high',
-            detected_at=datetime.now(),
-            affected_downstream=[]
-        )
-    ]
-    
-    enhanced_graph = integrator.build_quality_graph(lineage_graph, issues)
-    
-    assert enhanced_graph.nodes['source_table']['quality_status'] == 'unhealthy'
-    assert enhanced_graph.nodes['intermediate_table']['quality_status'] == 'at_risk'
-    assert enhanced_graph.nodes['final_table']['quality_status'] == 'at_risk'
+def test_lineage_integration():
+    monitor = DataQualityMonitor()
+    integrator = LineageQualityIntegrator(monitor)
+
+    integrator.add_lineage_edge("table_a", "table_b")
+    integrator.add_lineage_edge("table_b", "table_c")
+    integrator.add_lineage_edge("table_b", "table_d")
+
+    downstream = integrator.get_downstream_assets("table_a")
+    assert "table_b" in downstream
+    assert "table_c" in downstream
+    assert "table_d" in downstream
 
 
-def test_quality_summary(quality_monitor, lineage_graph):
-    integrator = LineageQualityIntegrator(quality_monitor)
-    issues = [
-        QualityIssue('source_table', 'volume', 'Volume drop', 'medium', datetime.now(), [])
-    ]
-    enhanced_graph = integrator.build_quality_graph(lineage_graph, issues)
-    summary = integrator.get_quality_summary(enhanced_graph)
-    
-    assert summary['unhealthy'] == 1
-    assert summary['at_risk'] == 2
-    assert summary['total_issues'] > 0
+def test_quality_propagation():
+    monitor = DataQualityMonitor()
+    integrator = LineageQualityIntegrator(monitor)
+
+    integrator.add_lineage_edge("source", "transform")
+    integrator.add_lineage_edge("transform", "output")
+
+    stale_metric = monitor.check_freshness(
+        "source", datetime.now() - timedelta(hours=30), 24
+    )
+    monitor.record_metric(stale_metric)
+
+    affected = integrator.propagate_quality_issues("source")
+    assert "transform" in affected
+    assert "output" in affected
 
 
-def test_critical_path_identification(quality_monitor, lineage_graph):
-    integrator = LineageQualityIntegrator(quality_monitor)
-    issues = [
-        QualityIssue('source_table', 'freshness', 'Stale', 'high', datetime.now(), [])
-    ]
-    enhanced_graph = integrator.build_quality_graph(lineage_graph, issues)
-    critical = integrator.get_critical_path(enhanced_graph)
-    
-    assert 'source_table' in critical
-    assert len(critical) > 0
+def test_alert_generation():
+    monitor = DataQualityMonitor()
+    integrator = LineageQualityIntegrator(monitor)
+    alert_mgr = QualityAlertManager(integrator)
+
+    integrator.add_lineage_edge("bad_table", "downstream_table")
+    stale = monitor.check_freshness(
+        "bad_table", datetime.now() - timedelta(hours=30), 24
+    )
+    monitor.record_metric(stale)
+
+    affected = integrator.propagate_quality_issues("bad_table")
+    assert len(affected) > 0
+
+    issue = monitor.issues["bad_table"][0]
+    alert = alert_mgr.generate_alert("bad_table", issue)
+    assert alert["severity"] == "high"
+    assert alert["status"] == "active"
