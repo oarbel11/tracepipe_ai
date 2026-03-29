@@ -1,8 +1,7 @@
-duckdb
-pandas
-mcp
-gitpython
-networkx
-databricks-sql-connector
-sqlparse
-pyyaml
+# Core dependencies
+requests>=2.31.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# Optional: Databricks SDK for lineage unification
+# databricks-sdk>=0.18.0
