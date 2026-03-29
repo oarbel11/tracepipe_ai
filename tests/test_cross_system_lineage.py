@@ -1,90 +1,79 @@
 import pytest
-import networkx as nx
-from scripts.lineage.external_connectors import ExternalConnectorRegistry, TableauConnector
-from scripts.lineage.lineage_stitcher import LineageStitcher
+from tracepipe_ai.cross_system_lineage import (
+    LineageIntegrator, LineageStitcher, ConnectorConfig
+)
 
 
-@pytest.fixture
-def unity_catalog_lineage():
-    return [
-        {'source': 'raw.orders', 'target': 'analytics.order_summary'},
-        {'source': 'raw.customers', 'target': 'analytics.customer_insights'}
-    ]
+class MockConnector:
+    def get_lineage(self, filters):
+        return [
+            {'source': 'table1', 'target': 'table2',
+             'source_metadata': {'type': 'table'},
+             'target_metadata': {'type': 'table'}}
+        ]
 
 
-@pytest.fixture
-def external_configs():
-    return [
-        {
-            'type': 'tableau',
-            'name': 'tableau_prod',
-            'data_sources': ['analytics.order_summary', 'analytics.customer_insights'],
-            'dashboards': ['Sales Dashboard', 'Customer 360']
-        },
-        {
-            'type': 'powerbi',
-            'name': 'powerbi_prod',
-            'datasets': ['analytics.customer_insights'],
-            'reports': ['Executive Report']
-        }
-    ]
+def test_connector_config():
+    config = ConnectorConfig()
+    config.add_connector('test_bi', 'tableau',
+                         {'host': 'localhost', 'port': 8080})
+    assert 'test_bi' in config.list_connectors()
+    assert config.get_connector('test_bi')['type'] == 'tableau'
+    assert config.remove_connector('test_bi') is True
 
 
-def test_external_connector_registry():
-    registry = ExternalConnectorRegistry()
-    config = {'name': 'test_tableau', 'data_sources': [], 'dashboards': []}
-    connector = registry.get_connector('tableau', config)
-    assert connector is not None
-    assert isinstance(connector, TableauConnector)
-
-
-def test_tableau_connector_extract_lineage():
-    config = {
-        'name': 'tableau_test',
-        'data_sources': ['db.table1'],
-        'dashboards': ['Dashboard1']
-    }
-    connector = TableauConnector(config)
-    lineage = connector.extract_lineage()
+def test_lineage_integrator():
+    integrator = LineageIntegrator()
+    connector = MockConnector()
+    integrator.register_connector('mock', connector)
+    assert 'mock' in integrator.list_connectors()
+    lineage = integrator.fetch_lineage('mock')
     assert len(lineage) == 1
-    assert lineage[0]['source'] == 'db.table1'
-    assert lineage[0]['target'] == 'Dashboard1'
-    assert lineage[0]['system'] == 'tableau'
+    assert lineage[0]['source'] == 'table1'
+    cached = integrator.get_cached_lineage('mock')
+    assert cached == lineage
+    integrator.clear_cache('mock')
+    assert integrator.get_cached_lineage('mock') is None
 
 
-def test_lineage_stitcher_basic(unity_catalog_lineage, external_configs):
-    stitcher = LineageStitcher(unity_catalog_lineage)
-    graph = stitcher.stitch_lineage(external_configs)
-    assert graph.number_of_nodes() > 0
-    assert graph.number_of_edges() >= len(unity_catalog_lineage)
+def test_lineage_stitcher():
+    stitcher = LineageStitcher()
+    uc_lineage = [
+        {'source': 'catalog.schema.table1', 'target': 'catalog.schema.table2',
+         'source_metadata': {}, 'target_metadata': {}}
+    ]
+    stitcher.add_unity_catalog_lineage(uc_lineage)
+    external_lineage = [
+        {'source': 'dashboard1', 'target': 'dashboard2',
+         'source_metadata': {}, 'target_metadata': {}}
+    ]
+    stitcher.add_external_lineage('tableau', external_lineage)
+    result = stitcher.get_complete_lineage()
+    assert len(result['nodes']) == 4
+    assert len(result['edges']) == 2
 
 
-def test_end_to_end_path(unity_catalog_lineage, external_configs):
-    stitcher = LineageStitcher(unity_catalog_lineage)
-    stitcher.stitch_lineage(external_configs)
-    paths = stitcher.get_end_to_end_path('raw.orders', 'Sales Dashboard')
-    assert len(paths) >= 0
+def test_lineage_stitcher_matching():
+    stitcher = LineageStitcher()
+    uc_lineage = [
+        {'source': 'catalog.schema.sales', 'target': 'catalog.schema.report',
+         'source_metadata': {}, 'target_metadata': {}}
+    ]
+    stitcher.add_unity_catalog_lineage(uc_lineage)
+    matching_rules = [{'source_pattern': 'sales', 'target_pattern': 'report'}]
+    result = stitcher.stitch_lineage(matching_rules)
+    assert len(result['nodes']) >= 2
 
 
-def test_upstream_dependencies(unity_catalog_lineage):
-    stitcher = LineageStitcher(unity_catalog_lineage)
-    stitcher.stitch_lineage([])
-    upstream = stitcher.get_upstream_dependencies('analytics.order_summary')
-    assert 'raw.orders' in upstream
-
-
-def test_downstream_impact(unity_catalog_lineage, external_configs):
-    stitcher = LineageStitcher(unity_catalog_lineage)
-    stitcher.stitch_lineage(external_configs)
-    downstream = stitcher.get_downstream_impact('analytics.order_summary')
-    assert len(downstream) >= 0
-
-
-def test_export_lineage(unity_catalog_lineage, external_configs):
-    stitcher = LineageStitcher(unity_catalog_lineage)
-    stitcher.stitch_lineage(external_configs)
-    export = stitcher.export_lineage()
-    assert 'nodes' in export
-    assert 'edges' in export
-    assert 'stats' in export
-    assert export['stats']['total_nodes'] > 0
+def test_lineage_navigation():
+    stitcher = LineageStitcher()
+    stitcher.add_unity_catalog_lineage([
+        {'source': 'A', 'target': 'B', 'source_metadata': {},
+         'target_metadata': {}},
+        {'source': 'B', 'target': 'C', 'source_metadata': {},
+         'target_metadata': {}}
+    ])
+    downstream = stitcher.get_downstream('A')
+    assert 'B' in downstream
+    upstream = stitcher.get_upstream('C')
+    assert 'B' in upstream
