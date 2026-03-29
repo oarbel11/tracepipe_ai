@@ -1,79 +1,67 @@
 """Tests for lineage capture functionality."""
 
-from scripts.lineage.unmanaged_capture import UnmanagedLineageCapture
-from scripts.lineage.udf_mapper import UDFColumnMapper
-from scripts.lineage.lineage_tracker import LineageTracker
+import pytest
+from tracepipe_ai.lineage_capture import (
+    UnmanagedCapture,
+    UDFMapper,
+    LineageTracker
+)
 
 
 def test_unmanaged_capture_write_operation():
-    """Test capturing unmanaged write operations."""
-    capture = UnmanagedLineageCapture()
-    
-    code = "df.write.save('/tmp/data.parquet')"
-    context = {'source_tables': ['table1'], 'columns': ['col1', 'col2']}
-    
-    result = capture.capture_write_operation(code, context)
+    capture = UnmanagedCapture()
+    result = capture.capture_write_operation(
+        path='s3://bucket/path/data.parquet',
+        source_tables=['table1', 'table2'],
+        columns=['col1', 'col2']
+    )
     assert result is not None
-    assert result['operation_type'] == 'write'
-    assert len(capture.captured_operations) == 1
+    assert result['path'] == 's3://bucket/path/data.parquet'
+    assert len(result['source_tables']) == 2
 
 
 def test_unmanaged_capture_get_lineage():
-    """Test retrieving lineage for a path."""
-    capture = UnmanagedLineageCapture()
-    code = "df.write.parquet('/data/output.parquet')"
-    context = {'source_tables': ['source'], 'columns': ['id']}
-    
-    capture.capture_write_operation(code, context)
-    lineage = capture.get_lineage('/data/output.parquet')
-    
+    capture = UnmanagedCapture()
+    capture.capture_write_operation(
+        path='s3://bucket/data.parquet',
+        source_tables=['table1']
+    )
+    lineage = capture.get_lineage('s3://bucket/data.parquet')
     assert len(lineage) == 1
 
 
 def test_udf_mapper_analyze_udf():
-    """Test UDF analysis."""
-    mapper = UDFColumnMapper()
-    
-    def sample_udf(x, y):
-        return x + y
-    
-    result = mapper.analyze_udf(sample_udf, 'add_udf')
-    assert result['udf_name'] == 'add_udf'
+    mapper = UDFMapper()
+    def sample_udf(x):
+        return x * 2
+    mapper.register_udf('sample', sample_udf)
+    result = mapper.analyze_udf('sample')
     assert 'x' in result['inputs']
-    assert 'y' in result['inputs']
 
 
-def test_udf_mapper_manual_mapping():
-    """Test manual UDF mapping."""
-    mapper = UDFColumnMapper()
-    mapper.register_manual_mapping('custom_udf', ['in1'], ['out1'])
-    
-    assert 'custom_udf' in mapper.udf_mappings
-    assert mapper.udf_mappings['custom_udf']['manual'] is True
+def test_udf_mapper_register_udf():
+    mapper = UDFMapper()
+    def test_func(a, b):
+        return a + b
+    result = mapper.register_udf('test', test_func)
+    assert result['name'] == 'test'
+    assert 'test' in mapper.udf_registry
 
 
 def test_lineage_tracker_track_operation():
-    """Test full lineage tracking."""
     tracker = LineageTracker()
-    
-    code = "df.write.save('/output/data.csv')"
-    context = {'source_tables': ['input_table'], 'columns': ['a', 'b']}
-    
-    result = tracker.track_operation(code, context)
+    result = tracker.track_operation(
+        'unmanaged_write',
+        {'path': 's3://bucket/test.parquet', 'source_tables': ['table1']}
+    )
     assert result is not None
-    
-    lineage = tracker.get_full_lineage('/output/data.csv')
-    assert lineage['source_count'] == 1
 
 
 def test_lineage_tracker_export():
-    """Test exporting lineage."""
     tracker = LineageTracker()
-    code = "df.write.json('/data/out.json')"
-    context = {'source_tables': ['src'], 'columns': ['col']}
-    
-    tracker.track_operation(code, context)
+    tracker.track_operation(
+        'unmanaged_write',
+        {'path': 's3://bucket/test.parquet', 'source_tables': ['table1']}
+    )
     export = tracker.export_lineage()
-    
-    assert 'lineage_graph' in export
     assert export['total_operations'] == 1
