@@ -1,74 +1,64 @@
-from typing import Dict, List
 import json
+from typing import Dict, List
 
 
 class LineageVisualizer:
-    def __init__(self, extractor, analyzer):
-        self.extractor = extractor
-        self.analyzer = analyzer
+    def __init__(self):
+        self.graph_data = {"nodes": [], "edges": []}
 
-    def generate_lineage_graph(self, table: str, column: str) -> Dict:
-        """Generate lineage graph structure."""
-        lineage = self.extractor.get_column_lineage(table, column)
-        
-        nodes = [{
-            "id": f"{table}.{column}",
-            "label": column,
-            "type": "column",
-            "table": table
-        }]
-        
+    def create_graph(self, lineage: Dict) -> Dict:
+        """Create graph representation of lineage."""
+        nodes = []
         edges = []
-        for upstream in lineage.get("upstream", []):
+        
+        target_table = lineage.get("target_table", "unknown")
+        
+        for col_name, col_info in lineage.get("columns", {}).items():
+            target_node = f"{target_table}.{col_name}"
             nodes.append({
-                "id": upstream,
-                "label": upstream.split(".")[-1],
-                "type": "column"
+                "id": target_node,
+                "label": col_name,
+                "table": target_table,
+                "type": "target"
             })
+            
+            for src_col in col_info.get("source_columns", []):
+                nodes.append({
+                    "id": src_col,
+                    "label": src_col.split(".")[-1],
+                    "table": src_col.split(".")[0],
+                    "type": "source"
+                })
+                
+                edges.append({
+                    "from": src_col,
+                    "to": target_node,
+                    "transformation": col_info.get("transformation_type"),
+                    "expression": col_info.get("expression")
+                })
+        
+        unique_nodes = {node["id"]: node for node in nodes}
+        
+        return {
+            "nodes": list(unique_nodes.values()),
+            "edges": edges
+        }
+
+    def export_to_json(self, graph: Dict) -> str:
+        """Export graph to JSON format."""
+        return json.dumps(graph, indent=2)
+
+    def generate_impact_visualization(self, impact: Dict) -> Dict:
+        """Generate visualization for impact analysis."""
+        nodes = [{"id": impact["source"], "type": "origin"}]
+        edges = []
+        
+        for item in impact.get("transformation_chain", []):
+            nodes.append({"id": item["to"], "type": "affected"})
             edges.append({
-                "source": upstream,
-                "target": f"{table}.{column}"
+                "from": item["from"],
+                "to": item["to"],
+                "transformation": item["transformation"]
             })
         
         return {"nodes": nodes, "edges": edges}
-
-    def generate_impact_graph(self, table: str, column: str) -> Dict:
-        """Generate impact analysis graph."""
-        impact = self.analyzer.analyze_column_change(table, column)
-        
-        nodes = [{
-            "id": f"{table}.{column}",
-            "label": column,
-            "type": "source",
-            "risk": impact["risk_level"]
-        }]
-        
-        edges = []
-        for affected_table in impact["affected_tables"]:
-            nodes.append({
-                "id": affected_table,
-                "label": affected_table,
-                "type": "affected_table"
-            })
-            edges.append({
-                "source": f"{table}.{column}",
-                "target": affected_table
-            })
-        
-        return {"nodes": nodes, "edges": edges, "risk": impact["risk_level"]}
-
-    def export_to_json(self, graph: Dict, output_path: str):
-        """Export graph to JSON file."""
-        with open(output_path, "w") as f:
-            json.dump(graph, f, indent=2)
-
-    def get_interactive_html(self, table: str, column: str) -> str:
-        """Generate interactive HTML visualization."""
-        graph = self.generate_lineage_graph(table, column)
-        
-        html = "<html><body><h1>Column Lineage</h1>"
-        html += f"<h2>{table}.{column}</h2>"
-        html += f"<pre>{json.dumps(graph, indent=2)}</pre>"
-        html += "</body></html>"
-        
-        return html

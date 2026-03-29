@@ -1,92 +1,80 @@
 import pytest
 from scripts.lineage.column_lineage_extractor import ColumnLineageExtractor
-from scripts.lineage.column_impact_analyzer import ColumnImpactAnalyzer
+from scripts.lineage.impact_analyzer import ImpactAnalyzer
 from scripts.lineage.lineage_visualizer import LineageVisualizer
-from unittest.mock import Mock, MagicMock
 
 
-@pytest.fixture
-def mock_workspace_client():
-    return Mock()
-
-
-@pytest.fixture
-def extractor(mock_workspace_client):
-    return ColumnLineageExtractor(mock_workspace_client)
-
-
-@pytest.fixture
-def analyzer(mock_workspace_client, extractor):
-    return ColumnImpactAnalyzer(mock_workspace_client, extractor)
-
-
-@pytest.fixture
-def visualizer(extractor, analyzer):
-    return LineageVisualizer(extractor, analyzer)
-
-
-def test_extract_from_sql(extractor):
-    sql = "SELECT col1, col2 AS new_col FROM table1"
-    result = extractor.extract_from_sql(sql, "table1")
+def test_column_lineage_extractor():
+    extractor = ColumnLineageExtractor()
+    sql = "SELECT a.id, a.name AS customer_name, b.amount FROM users a JOIN orders b ON a.id = b.user_id"
+    lineage = extractor.extract_from_sql(sql, "customer_orders")
     
-    assert isinstance(result, dict)
-    assert "NEW_COL" in result or "COL2" in result
+    assert lineage["target_table"] == "customer_orders"
+    assert "id" in lineage["columns"]
+    assert "customer_name" in lineage["columns"]
+    assert "amount" in lineage["columns"]
+    assert len(lineage["sources"]) >= 2
 
 
-def test_extract_from_dataframe(extractor):
-    df_code = 'df.select("col1", "col2").withColumn("col3", col("col1") + 1)'
-    result = extractor.extract_from_dataframe(df_code)
+def test_transformation_classification():
+    extractor = ColumnLineageExtractor()
+    sql = "SELECT SUM(amount) AS total, CONCAT(first_name, last_name) AS full_name FROM sales"
+    lineage = extractor.extract_from_sql(sql, "summary")
     
-    assert isinstance(result, dict)
-    assert "col3" in result
-    assert "col1" in result["col3"]
+    assert lineage["columns"]["total"]["transformation_type"] == "aggregation"
+    assert lineage["columns"]["full_name"]["transformation_type"] == "string_manipulation"
 
 
-def test_get_column_lineage(extractor):
-    result = extractor.get_column_lineage("test_table", "test_column")
+def test_impact_analyzer():
+    analyzer = ImpactAnalyzer()
     
-    assert "column" in result
-    assert result["column"] == "test_column"
-    assert "table" in result
-    assert "upstream" in result
-
-
-def test_analyze_column_change(analyzer):
-    result = analyzer.analyze_column_change("test_table", "test_column")
+    lineage1 = {
+        "target_table": "table_b",
+        "columns": {
+            "col_b": {
+                "source_columns": ["table_a.col_a"],
+                "transformation_type": "direct"
+            }
+        }
+    }
     
-    assert "affected_tables" in result
-    assert "risk_level" in result
-    assert result["risk_level"] in ["LOW", "MEDIUM", "HIGH"]
-
-
-def test_get_impact_report(analyzer):
-    report = analyzer.get_impact_report("test_table", "test_column")
+    lineage2 = {
+        "target_table": "table_c",
+        "columns": {
+            "col_c": {
+                "source_columns": ["table_b.col_b"],
+                "transformation_type": "calculation"
+            }
+        }
+    }
     
-    assert isinstance(report, str)
-    assert "Impact Analysis" in report
-    assert "Risk Level" in report
-
-
-def test_generate_lineage_graph(visualizer):
-    graph = visualizer.generate_lineage_graph("test_table", "test_column")
+    analyzer.add_lineage("table_b", lineage1)
+    analyzer.add_lineage("table_c", lineage2)
     
-    assert "nodes" in graph
-    assert "edges" in graph
-    assert isinstance(graph["nodes"], list)
-    assert isinstance(graph["edges"], list)
+    impact = analyzer.analyze_column_impact("table_a", "col_a")
+    
+    assert "table_b" in impact["affected_tables"]
+    assert "table_c" in impact["affected_tables"]
+    assert impact["impact_depth"] >= 1
 
 
-def test_generate_impact_graph(visualizer):
-    graph = visualizer.generate_impact_graph("test_table", "test_column")
+def test_lineage_visualizer():
+    visualizer = LineageVisualizer()
+    
+    lineage = {
+        "target_table": "result",
+        "columns": {
+            "output_col": {
+                "source_columns": ["source.input_col"],
+                "transformation_type": "direct",
+                "expression": "source.input_col"
+            }
+        }
+    }
+    
+    graph = visualizer.create_graph(lineage)
     
     assert "nodes" in graph
     assert "edges" in graph
-    assert "risk" in graph
-
-
-def test_get_interactive_html(visualizer):
-    html = visualizer.get_interactive_html("test_table", "test_column")
-    
-    assert isinstance(html, str)
-    assert "<html>" in html
-    assert "Column Lineage" in html
+    assert len(graph["nodes"]) >= 2
+    assert len(graph["edges"]) >= 1
