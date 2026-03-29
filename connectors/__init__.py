@@ -1,25 +1,19 @@
-"""
-Cross-System Lineage Connectors
+"""Cross-system lineage connectors package."""
 
-Provides pre-built connectors and inference mechanisms for external data sources.
-"""
-
-from .base import BaseConnector, ConnectorConfig, LineageEdge
+from .base import ConnectorConfig, LineageEdge, BaseConnector
 from .external_sources import (
     KafkaConnector,
     S3Connector,
-    ExternalDBConnector,
-    SnowflakeConnector
+    ExternalDatabaseConnector
 )
 from .lineage_engine import LineageInferenceEngine
 
 __all__ = [
-    'BaseConnector',
     'ConnectorConfig',
     'LineageEdge',
+    'BaseConnector',
     'KafkaConnector',
     'S3Connector',
-    'ExternalDBConnector',
-    'SnowflakeConnector',
-    'LineageInferenceEngine',
+    'ExternalDatabaseConnector',
+    'LineageInferenceEngine'
 ]

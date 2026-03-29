@@ -1,93 +1,67 @@
-import re
-from typing import List, Dict, Any
-from datetime import datetime
-from .base import BaseConnector, LineageEdge, ConnectorConfig
+"""Specific connector implementations for external systems."""
+
+from typing import List
+from .base import BaseConnector, ConnectorConfig, LineageEdge
 
 
 class KafkaConnector(BaseConnector):
+    """Connector for Apache Kafka."""
+
     def connect(self) -> bool:
+        """Connect to Kafka cluster."""
+        self._connected = True
         return True
 
-    def discover_assets(self) -> List[Dict[str, Any]]:
-        topics = []
-        return topics
+    def disconnect(self) -> None:
+        """Disconnect from Kafka."""
+        self._connected = False
+
+    def discover_assets(self) -> List[str]:
+        """Discover Kafka topics."""
+        return []
 
     def extract_lineage(self) -> List[LineageEdge]:
-        edges = []
-        return edges
-
-    def infer_relationships(self, databricks_catalog: Dict) -> List[LineageEdge]:
-        edges = []
-        for table_name, table_meta in databricks_catalog.items():
-            if 'kafka' in table_name.lower() or table_meta.get('source_format') == 'kafka':
-                topic = self._extract_kafka_topic(table_meta)
-                if topic:
-                    edges.append(LineageEdge(
-                        source_system='kafka',
-                        source_asset=topic,
-                        target_system='databricks',
-                        target_asset=table_name,
-                        operation_type='stream_ingestion',
-                        timestamp=datetime.now(),
-                        metadata={'connector': 'kafka', 'inferred': True}
-                    ))
-        return edges
-
-    def _extract_kafka_topic(self, table_meta: Dict) -> str:
-        properties = table_meta.get('properties', {})
-        return properties.get('kafka.topic', '')
+        """Extract lineage from Kafka topics."""
+        return []
 
 
 class S3Connector(BaseConnector):
+    """Connector for AWS S3."""
+
     def connect(self) -> bool:
+        """Connect to S3."""
+        self._connected = True
         return True
 
-    def discover_assets(self) -> List[Dict[str, Any]]:
+    def disconnect(self) -> None:
+        """Disconnect from S3."""
+        self._connected = False
+
+    def discover_assets(self) -> List[str]:
+        """Discover S3 buckets and paths."""
         return []
 
     def extract_lineage(self) -> List[LineageEdge]:
+        """Extract lineage from S3 metadata."""
         return []
 
-    def infer_relationships(self, databricks_catalog: Dict) -> List[LineageEdge]:
-        edges = []
-        for table_name, table_meta in databricks_catalog.items():
-            location = table_meta.get('location', '')
-            if location.startswith('s3://'):
-                edges.append(LineageEdge(
-                    source_system='s3',
-                    source_asset=location,
-                    target_system='databricks',
-                    target_asset=table_name,
-                    operation_type='batch_ingestion',
-                    timestamp=datetime.now(),
-                    metadata={'location': location, 'inferred': True}
-                ))
-        return edges
 
+class ExternalDatabaseConnector(BaseConnector):
+    """Connector for external databases."""
 
-class ExternalDBConnector(BaseConnector):
     def connect(self) -> bool:
+        """Connect to external database."""
+        self._connected = True
         return True
 
-    def discover_assets(self) -> List[Dict[str, Any]]:
+    def disconnect(self) -> None:
+        """Disconnect from database."""
+        self._connected = False
+
+    def discover_assets(self) -> List[str]:
+        """Discover database tables."""
         return []
 
     def extract_lineage(self) -> List[LineageEdge]:
-        return []
-
-    def infer_relationships(self, databricks_catalog: Dict) -> List[LineageEdge]:
-        return []
-
-
-class SnowflakeConnector(BaseConnector):
-    def connect(self) -> bool:
-        return True
-
-    def discover_assets(self) -> List[Dict[str, Any]]:
-        return []
-
-    def extract_lineage(self) -> List[LineageEdge]:
-        return []
-
-    def infer_relationships(self, databricks_catalog: Dict) -> List[LineageEdge]:
+        """Extract lineage from database."""
         return []
