@@ -6,3 +6,5 @@ networkx
 databricks-sql-connector
 sqlparse
 pyyaml
+pyspark
+py4j
