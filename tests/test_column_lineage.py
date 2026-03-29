@@ -1,22 +1,20 @@
 import pytest
-from tracepipe_ai.column_lineage import (
-    ColumnLineageExtractor, ImpactAnalyzer, LineageVisualizer
-)
+from src.column_lineage import ColumnLineageExtractor
+from src.impact_analyzer import ImpactAnalyzer
+from src.lineage_visualizer import LineageVisualizer
 
 def test_column_lineage_extractor():
     extractor = ColumnLineageExtractor()
-    sql = "SELECT customer_id, order_date FROM orders"
-    lineage = extractor.extract_lineage(sql, "sales_summary")
-    
-    assert lineage["target_table"] == "sales_summary"
-    assert "customer_id" in lineage["columns"]
-    assert "order_date" in lineage["columns"]
+    sql = "SELECT first_name, last_name, age FROM users"
+    lineage = extractor.extract_lineage(sql, "users_view")
+    assert lineage["target_table"] == "users_view"
+    assert "first_name" in lineage["columns"]
+    assert lineage["columns"]["first_name"]["transformation_type"] == "direct"
 
 def test_transformation_classification():
     extractor = ColumnLineageExtractor()
-    sql = "SELECT CONCAT(first_name, last_name) AS full_name FROM users"
-    lineage = extractor.extract_lineage(sql, "user_profiles")
-    
+    sql = "SELECT CONCAT(first_name, ' ', last_name) AS full_name FROM users"
+    lineage = extractor.extract_lineage(sql, "users_view")
     assert "full_name" in lineage["columns"]
     assert lineage["columns"]["full_name"]["transformation_type"] == "string_manipulation"
     assert "first_name" in lineage["columns"]["full_name"]["source_columns"]
@@ -24,27 +22,30 @@ def test_transformation_classification():
 
 def test_impact_analyzer():
     analyzer = ImpactAnalyzer()
-    extractor = ColumnLineageExtractor()
-    
-    sql1 = "SELECT customer_id, total FROM orders"
-    lineage1 = extractor.extract_lineage(sql1, "order_summary")
-    analyzer.add_lineage(lineage1)
-    
-    sql2 = "SELECT customer_id, SUM(total) AS revenue FROM order_summary"
-    lineage2 = extractor.extract_lineage(sql2, "customer_revenue")
-    analyzer.add_lineage(lineage2)
-    
-    impact = analyzer.analyze_impact("order_summary", "total")
-    assert impact["total_impacted"] >= 1
+    lineage_data = [{
+        "target_table": "table_b",
+        "columns": {
+            "col_x": {"source_columns": ["col_a"], "transformation_type": "direct"}
+        }
+    }]
+    analyzer.build_graph(lineage_data)
+    impact = analyzer.analyze_impact("table_a", "col_a")
+    assert impact["source"]["table"] == "table_a"
+    assert len(impact["downstream_impact"]) > 0
 
 def test_lineage_visualizer():
-    extractor = ColumnLineageExtractor()
     visualizer = LineageVisualizer()
-    
-    sql = "SELECT customer_id, order_date FROM orders"
-    lineage = extractor.extract_lineage(sql, "sales_summary")
+    lineage = {
+        "target_table": "users_view",
+        "columns": {
+            "full_name": {
+                "source_columns": ["first_name", "last_name"],
+                "transformation_type": "string_manipulation"
+            }
+        }
+    }
     graph = visualizer.generate_graph(lineage)
-    
-    assert "nodes" in graph
-    assert "edges" in graph
-    assert len(graph["nodes"]) > 0
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 2
+    ascii_output = visualizer.render_ascii(graph)
+    assert "first_name" in ascii_output
