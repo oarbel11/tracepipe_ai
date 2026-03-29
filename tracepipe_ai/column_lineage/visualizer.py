@@ -1,44 +1,55 @@
-from typing import Dict, Any
+from typing import Dict, List
 import json
 
 class LineageVisualizer:
     def __init__(self):
         pass
     
-    def generate_graph(self, lineage: Dict[str, Any]) -> Dict[str, Any]:
+    def generate_graph(self, lineage_data: Dict) -> Dict:
         nodes = []
         edges = []
         
-        target = lineage["target_table"]
+        table = lineage_data.get('table')
+        columns = lineage_data.get('columns', {})
         
-        for col_name, col_info in lineage["columns"].items():
-            target_id = f"{target}.{col_name}"
+        nodes.append({
+            "id": table,
+            "label": table,
+            "type": "table"
+        })
+        
+        for col_name, col_info in columns.items():
+            col_id = f"{table}.{col_name}"
             nodes.append({
-                "id": target_id,
+                "id": col_id,
                 "label": col_name,
-                "type": "target"
+                "type": "column",
+                "transformation": col_info.get('transformation_type')
             })
             
-            for source_col in col_info.get("source_columns", []):
-                source_id = f"source.{source_col}"
-                
-                if not any(n["id"] == source_id for n in nodes):
+            edges.append({
+                "from": table,
+                "to": col_id,
+                "type": "contains"
+            })
+            
+            for source in col_info.get('source_columns', []):
+                source_id = f"source.{source}"
+                if not any(n['id'] == source_id for n in nodes):
                     nodes.append({
                         "id": source_id,
-                        "label": source_col,
-                        "type": "source"
+                        "label": source,
+                        "type": "source_column"
                     })
                 
                 edges.append({
                     "from": source_id,
-                    "to": target_id,
-                    "label": col_info.get("transformation_type", "unknown")
+                    "to": col_id,
+                    "type": "lineage",
+                    "transformation": col_info.get('transformation_type')
                 })
         
-        return {
-            "nodes": nodes,
-            "edges": edges
-        }
+        return {"nodes": nodes, "edges": edges}
     
-    def export_to_json(self, graph: Dict[str, Any]) -> str:
-        return json.dumps(graph, indent=2)
+    def export_to_json(self, graph_data: Dict) -> str:
+        return json.dumps(graph_data, indent=2)
