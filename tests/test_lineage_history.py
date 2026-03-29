@@ -10,65 +10,82 @@ from tracepipe_ai.lineage_history import LineageHistoryStorage
 @pytest.fixture
 def temp_db():
     """Create a temporary database for testing."""
-    fd, path = tempfile.mkstemp(suffix=".duckdb")
-    os.close(fd)
-    yield path
-    if os.path.exists(path):
-        os.unlink(path)
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    yield db_path
+    if os.path.exists(db_path):
+        os.unlink(db_path)
 
 
-@pytest.fixture
-def storage(temp_db):
-    """Create a LineageHistoryStorage instance."""
-    return LineageHistoryStorage(db_path=temp_db)
-
-
-def test_store_lineage(storage):
-    """Test storing lineage records."""
-    lineage_id = storage.store_lineage(
-        source="table_a",
-        target="table_b",
-        metadata={"operation": "transform"}
+def test_store_and_retrieve_lineage(temp_db):
+    """Test storing and retrieving lineage history."""
+    storage = LineageHistoryStorage(temp_db)
+    storage.store_lineage(
+        asset_name="sales_table",
+        asset_type="table",
+        upstream=["raw_sales", "customer_dim"],
+        downstream=["revenue_report"],
+        metadata={"owner": "data_team", "location": "s3://bucket/path"}
     )
-    assert lineage_id > 0
+
+    history = storage.get_lineage_history("sales_table")
+    assert len(history) == 1
+    assert history[0]["asset_name"] == "sales_table"
+    assert history[0]["asset_type"] == "table"
 
 
-def test_query_all_lineage(storage):
-    """Test querying all lineage records."""
-    storage.store_lineage("table_a", "table_b", {"op": "join"})
-    storage.store_lineage("table_b", "table_c", {"op": "filter"})
-    
-    results = storage.query_lineage()
-    assert len(results) == 2
-    assert results[0]["source_table"] in ["table_a", "table_b"]
-
-
-def test_query_by_table(storage):
-    """Test querying lineage by table name."""
-    storage.store_lineage("table_a", "table_b", {})
-    storage.store_lineage("table_c", "table_d", {})
-    
-    results = storage.query_lineage(table="table_a")
-    assert len(results) == 1
-    assert results[0]["source_table"] == "table_a"
-
-
-def test_query_by_date_range(storage):
-    """Test querying lineage by date range."""
+def test_time_travel(temp_db):
+    """Test time travel to specific point in past."""
+    storage = LineageHistoryStorage(temp_db)
     now = datetime.now()
-    storage.store_lineage("table_a", "table_b", {})
-    
-    results = storage.query_lineage(
-        start_date=now - timedelta(days=1),
-        end_date=now + timedelta(days=1)
+    past = now - timedelta(days=365)
+
+    storage.store_lineage(
+        asset_name="orders_table",
+        asset_type="table",
+        upstream=["raw_orders"],
+        downstream=["analytics_view"]
     )
-    assert len(results) == 1
+
+    result = storage.time_travel("orders_table", now + timedelta(days=1))
+    assert result is not None
+    assert result["asset_name"] == "orders_table"
+
+    no_result = storage.time_travel("orders_table", past)
+    assert no_result is None
 
 
-def test_metadata_persistence(storage):
-    """Test that metadata is correctly stored and retrieved."""
-    metadata = {"user": "test", "pipeline": "etl_001"}
-    storage.store_lineage("src", "dst", metadata)
-    
-    results = storage.query_lineage()
-    assert results[0]["metadata"] == metadata
+def test_multiple_snapshots(temp_db):
+    """Test storing multiple snapshots over time."""
+    storage = LineageHistoryStorage(temp_db)
+
+    for i in range(3):
+        storage.store_lineage(
+            asset_name="evolving_table",
+            asset_type="table",
+            upstream=[f"source_{i}"],
+            downstream=[f"target_{i}"]
+        )
+
+    history = storage.get_lineage_history("evolving_table")
+    assert len(history) == 3
+
+
+def test_date_range_filter(temp_db):
+    """Test filtering lineage by date range."""
+    storage = LineageHistoryStorage(temp_db)
+    now = datetime.now()
+
+    storage.store_lineage(
+        asset_name="filtered_table",
+        asset_type="table",
+        upstream=["source"],
+        downstream=["target"]
+    )
+
+    history = storage.get_lineage_history(
+        "filtered_table",
+        start_date=now - timedelta(hours=1),
+        end_date=now + timedelta(hours=1)
+    )
+    assert len(history) >= 1
