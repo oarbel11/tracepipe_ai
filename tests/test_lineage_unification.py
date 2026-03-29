@@ -1,74 +1,79 @@
-"""Tests for cross-workspace lineage unification."""
 import pytest
+import json
 from src.tracepipe_ai.lineage_unification import (
     LineageUnifier,
-    WorkspaceConfig,
-    UnifiedLineageGraph,
     LineageNode,
-    LineageEdge,
+    LineageEdge
 )
 
 
-def test_workspace_config_creation():
-    """Test WorkspaceConfig dataclass creation."""
-    config = WorkspaceConfig(
-        workspace_id="ws1",
-        host="https://test.databricks.com",
-        token="test_token",
-        metastore_id="metastore1",
-    )
-    assert config.workspace_id == "ws1"
-    assert config.host == "https://test.databricks.com"
-    assert config.metastore_id == "metastore1"
-
-
 def test_lineage_node_creation():
-    """Test LineageNode creation."""
     node = LineageNode(
-        fqn="catalog.schema.table",
-        workspace_id="ws1",
-        metastore_id="ms1",
-        object_type="table",
+        node_id='ws1:table1',
+        node_type='table',
+        name='catalog.schema.table1',
+        workspace='ws1',
+        metastore='metastore1',
+        metadata={'owner': 'user1'}
     )
-    assert node.fqn == "catalog.schema.table"
-    assert node.workspace_id == "ws1"
-    assert node.object_type == "table"
+    assert node.node_id == 'ws1:table1'
+    assert node.node_type == 'table'
+    assert node.workspace == 'ws1'
+    node_dict = node.to_dict()
+    assert node_dict['name'] == 'catalog.schema.table1'
 
 
-def test_unified_lineage_graph_add_node():
-    """Test adding nodes to unified graph."""
-    graph = UnifiedLineageGraph()
-    node = LineageNode(
-        fqn="catalog.schema.table",
-        workspace_id="ws1",
-        metastore_id="ms1",
-        object_type="table",
-    )
-    graph.add_node(node)
-    assert "catalog.schema.table" in graph.nodes
-    assert len(graph.nodes) == 1
+def test_lineage_edge_creation():
+    edge = LineageEdge('ws1:table1', 'ws1:table2', 'depends_on')
+    assert edge.source_id == 'ws1:table1'
+    assert edge.target_id == 'ws1:table2'
+    edge_dict = edge.to_dict()
+    assert edge_dict['edge_type'] == 'depends_on'
 
 
-def test_unified_lineage_graph_add_edge():
-    """Test adding edges to unified graph."""
-    graph = UnifiedLineageGraph()
-    edge = LineageEdge(
-        source_fqn="catalog.schema.source",
-        target_fqn="catalog.schema.target",
-    )
-    graph.add_edge(edge)
-    assert len(graph.edges) == 1
-    assert graph.edges[0].source_fqn == "catalog.schema.source"
+def test_lineage_unifier_single_workspace():
+    unifier = LineageUnifier()
+    workspace_config = {
+        'name': 'workspace1',
+        'metastore': 'metastore1',
+        'lineage': {
+            'nodes': [
+                {'id': 'table1', 'type': 'table', 'name': 'cat.sch.tbl1'},
+                {'id': 'table2', 'type': 'table', 'name': 'cat.sch.tbl2'}
+            ],
+            'edges': [
+                {'source': 'table1', 'target': 'table2', 'type': 'depends_on'}
+            ]
+        }
+    }
+    unifier.ingest_workspace(workspace_config)
+    graph = unifier.get_unified_graph()
+    assert len(graph['nodes']) == 2
+    assert len(graph['edges']) == 1
+    assert graph['nodes'][0]['workspace'] == 'workspace1'
 
 
-def test_lineage_graph_navigation():
-    """Test upstream/downstream navigation."""
-    graph = UnifiedLineageGraph()
-    graph.add_edge(LineageEdge("table_a", "table_b"))
-    graph.add_edge(LineageEdge("table_b", "table_c"))
-
-    upstream = graph.get_upstream("table_b")
-    downstream = graph.get_downstream("table_b")
-
-    assert "table_a" in upstream
-    assert "table_c" in downstream
+def test_lineage_unifier_multiple_workspaces():
+    unifier = LineageUnifier()
+    ws1_config = {
+        'name': 'ws1',
+        'metastore': 'ms1',
+        'lineage': {
+            'nodes': [{'id': 't1', 'type': 'table', 'name': 'tbl1'}],
+            'edges': []
+        }
+    }
+    ws2_config = {
+        'name': 'ws2',
+        'metastore': 'ms2',
+        'lineage': {
+            'nodes': [{'id': 't2', 'type': 'table', 'name': 'tbl2'}],
+            'edges': []
+        }
+    }
+    unifier.ingest_workspace(ws1_config)
+    unifier.ingest_workspace(ws2_config)
+    graph = unifier.get_unified_graph()
+    assert len(graph['nodes']) == 2
+    workspaces = {n['workspace'] for n in graph['nodes']}
+    assert workspaces == {'ws1', 'ws2'}

@@ -1,90 +1,81 @@
-"""Cross-workspace and cross-metastore lineage unification."""
-from typing import List, Dict, Set, Optional, Any
-from dataclasses import dataclass, field
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.catalog import LineageColumnInfo, ColumnLineage
-import logging
+import json
+from typing import Dict, List, Any, Optional
+from datetime import datetime
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class WorkspaceConfig:
-    """Configuration for a Databricks workspace."""
-    workspace_id: str
-    host: str
-    token: str
-    metastore_id: Optional[str] = None
+try:
+    from databricks.sdk import WorkspaceClient
+    DATABRICKS_SDK_AVAILABLE = True
+except ImportError:
+    DATABRICKS_SDK_AVAILABLE = False
+    WorkspaceClient = None
 
 
-@dataclass
 class LineageNode:
-    """Represents a node in the unified lineage graph."""
-    fqn: str
-    workspace_id: str
-    metastore_id: Optional[str]
-    object_type: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    def __init__(self, node_id: str, node_type: str, name: str,
+                 workspace: str, metastore: str, metadata: Dict):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.name = name
+        self.workspace = workspace
+        self.metastore = metastore
+        self.metadata = metadata
+
+    def to_dict(self):
+        return {
+            'node_id': self.node_id,
+            'node_type': self.node_type,
+            'name': self.name,
+            'workspace': self.workspace,
+            'metastore': self.metastore,
+            'metadata': self.metadata
+        }
 
 
-@dataclass
 class LineageEdge:
-    """Represents an edge in the unified lineage graph."""
-    source_fqn: str
-    target_fqn: str
-    edge_type: str = "depends_on"
+    def __init__(self, source_id: str, target_id: str, edge_type: str):
+        self.source_id = source_id
+        self.target_id = target_id
+        self.edge_type = edge_type
+
+    def to_dict(self):
+        return {
+            'source_id': self.source_id,
+            'target_id': self.target_id,
+            'edge_type': self.edge_type
+        }
 
 
-class UnifiedLineageGraph:
-    """Unified lineage graph across workspaces."""
+class LineageUnifier:
     def __init__(self):
         self.nodes: Dict[str, LineageNode] = {}
         self.edges: List[LineageEdge] = []
 
-    def add_node(self, node: LineageNode) -> None:
-        self.nodes[node.fqn] = node
+    def ingest_workspace(self, workspace_config: Dict) -> None:
+        workspace_name = workspace_config.get('name', 'unknown')
+        metastore = workspace_config.get('metastore', 'default')
+        lineage_data = workspace_config.get('lineage', {})
 
-    def add_edge(self, edge: LineageEdge) -> None:
-        self.edges.append(edge)
-
-    def get_upstream(self, fqn: str) -> List[str]:
-        return [e.source_fqn for e in self.edges if e.target_fqn == fqn]
-
-    def get_downstream(self, fqn: str) -> List[str]:
-        return [e.target_fqn for e in self.edges if e.source_fqn == fqn]
-
-
-class LineageUnifier:
-    """Unifies lineage from multiple Databricks workspaces."""
-    def __init__(self, workspace_configs: List[WorkspaceConfig]):
-        self.workspace_configs = workspace_configs
-        self.clients: Dict[str, WorkspaceClient] = {}
-        self._initialize_clients()
-
-    def _initialize_clients(self) -> None:
-        for config in self.workspace_configs:
-            self.clients[config.workspace_id] = WorkspaceClient(
-                host=config.host, token=config.token
+        for node_data in lineage_data.get('nodes', []):
+            node = LineageNode(
+                node_id=f"{workspace_name}:{node_data['id']}",
+                node_type=node_data.get('type', 'table'),
+                name=node_data.get('name', ''),
+                workspace=workspace_name,
+                metastore=metastore,
+                metadata=node_data.get('metadata', {})
             )
+            self.nodes[node.node_id] = node
 
-    def fetch_lineage(self) -> UnifiedLineageGraph:
-        graph = UnifiedLineageGraph()
-        for config in self.workspace_configs:
-            self._fetch_workspace_lineage(config, graph)
-        return graph
+        for edge_data in lineage_data.get('edges', []):
+            edge = LineageEdge(
+                source_id=f"{workspace_name}:{edge_data['source']}",
+                target_id=f"{workspace_name}:{edge_data['target']}",
+                edge_type=edge_data.get('type', 'depends_on')
+            )
+            self.edges.append(edge)
 
-    def _fetch_workspace_lineage(self, config: WorkspaceConfig,
-                                  graph: UnifiedLineageGraph) -> None:
-        client = self.clients[config.workspace_id]
-        try:
-            tables = client.tables.list(catalog_name="*", schema_name="*")
-            for table in tables:
-                fqn = f"{table.catalog_name}.{table.schema_name}.{table.name}"
-                node = LineageNode(
-                    fqn=fqn, workspace_id=config.workspace_id,
-                    metastore_id=config.metastore_id,
-                    object_type="table"
-                )
-                graph.add_node(node)
-        except Exception as e:
-            logger.warning(f"Error fetching lineage: {e}")
+    def get_unified_graph(self) -> Dict[str, Any]:
+        return {
+            'nodes': [n.to_dict() for n in self.nodes.values()],
+            'edges': [e.to_dict() for e in self.edges]
+        }
