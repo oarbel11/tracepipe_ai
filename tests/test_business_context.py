@@ -1,88 +1,91 @@
 import pytest
-import networkx as nx
-from pathlib import Path
-import tempfile
-import os
-from scripts.metadata_store import MetadataStore
-from scripts.lineage_enricher import LineageEnricher
-from scripts.context_viewer import ContextViewer
+from tracepipe_ai.business_context import (
+    MetadataStore, LineageEnricher, ContextViewer
+)
 
 
-@pytest.fixture
-def temp_metadata_store():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store_path = os.path.join(tmpdir, "metadata.json")
-        yield MetadataStore(store_path)
+def test_metadata_store_terms():
+    store = MetadataStore()
+    term_id = store.add_term('t1', 'Revenue', 'Total company revenue', 'Finance')
+    assert term_id == 't1'
+    term = store.get_term('t1')
+    assert term['name'] == 'Revenue'
+    assert term['definition'] == 'Total company revenue'
+    assert 't1' in store.list_terms()
 
 
-@pytest.fixture
-def sample_lineage_graph():
-    g = nx.DiGraph()
-    g.add_node("table.users", type="table")
-    g.add_node("table.orders", type="table")
-    g.add_node("view.user_orders", type="view")
-    g.add_edge("table.users", "view.user_orders")
-    g.add_edge("table.orders", "view.user_orders")
-    return g
+def test_metadata_store_owners():
+    store = MetadataStore()
+    owner_id = store.add_owner('e1', 'John Doe', 'john@example.com')
+    assert owner_id == 'e1'
+    owner = store.get_owner('e1')
+    assert owner['name'] == 'John Doe'
+    assert owner['email'] == 'john@example.com'
 
 
-def test_metadata_store_add_glossary(temp_metadata_store):
-    store = temp_metadata_store
-    store.add_glossary_term("table.users", "Customer", 
-                           "A person who purchases products", "business")
-    metadata = store.get_metadata("table.users")
-    assert len(metadata["glossary"]) == 1
-    assert metadata["glossary"][0]["term"] == "Customer"
+def test_metadata_store_quality_rules():
+    store = MetadataStore()
+    rule_id = store.add_quality_rule('r1', 'e1', 'not_null', 'field must not be null')
+    assert rule_id == 'r1'
+    rules = store.get_quality_rules('e1')
+    assert len(rules) == 1
+    assert rules[0]['type'] == 'not_null'
 
 
-def test_metadata_store_add_owner(temp_metadata_store):
-    store = temp_metadata_store
-    store.add_owner("table.orders", "John Doe", "Data Steward", "john@example.com")
-    metadata = store.get_metadata("table.orders")
-    assert len(metadata["owners"]) == 1
-    assert metadata["owners"][0]["name"] == "John Doe"
-
-
-def test_metadata_store_add_quality_rule(temp_metadata_store):
-    store = temp_metadata_store
-    store.add_quality_rule("table.users", "completeness", 
-                          "Email must not be null", 0.95)
-    metadata = store.get_metadata("table.users")
-    assert len(metadata["quality_rules"]) == 1
-    assert metadata["quality_rules"][0]["threshold"] == 0.95
-
-
-def test_metadata_store_search(temp_metadata_store):
-    store = temp_metadata_store
-    store.add_glossary_term("table.users", "Customer", "A purchaser", "business")
-    results = store.search_by_term("customer")
-    assert len(results) == 1
-    assert results[0]["entity_id"] == "table.users"
-
-
-def test_lineage_enricher_enrich_graph(temp_metadata_store, sample_lineage_graph):
-    store = temp_metadata_store
-    store.add_glossary_term("table.users", "Customer", "User data", "business")
+def test_lineage_enricher():
+    store = MetadataStore()
+    store.add_term('t1', 'Revenue', 'Total revenue', 'Finance')
+    store.add_owner('e1', 'Jane Smith', 'jane@example.com')
+    
     enricher = LineageEnricher(store)
-    enriched = enricher.enrich_graph(sample_lineage_graph)
-    assert "metadata" in enriched.nodes["table.users"]
-    assert enriched.nodes["table.users"]["has_context"] is True
+    enriched = enricher.enrich_node('node1', term_ids=['t1'], owner_id='e1')
+    
+    assert len(enriched['terms']) == 1
+    assert enriched['terms'][0]['term']['name'] == 'Revenue'
+    assert enriched['owner']['name'] == 'Jane Smith'
 
 
-def test_lineage_enricher_context_summary(temp_metadata_store, sample_lineage_graph):
-    store = temp_metadata_store
-    store.add_owner("table.users", "Alice", "Owner", "alice@example.com")
+def test_context_viewer():
+    store = MetadataStore()
+    store.add_term('t1', 'Revenue', 'Total revenue', 'Finance')
+    store.add_owner('e1', 'Jane Smith', 'jane@example.com')
+    
     enricher = LineageEnricher(store)
-    summary = enricher.get_context_summary(sample_lineage_graph)
-    assert summary["total_nodes"] == 3
-    assert summary["nodes_with_context"] == 1
-
-
-def test_context_viewer_display(temp_metadata_store, sample_lineage_graph):
-    store = temp_metadata_store
-    store.add_glossary_term("table.users", "Customer", "User data", "business")
-    enricher = LineageEnricher(store)
+    enricher.enrich_node('node1', term_ids=['t1'], owner_id='e1')
+    
     viewer = ContextViewer(enricher)
-    output = viewer.display_node_context(sample_lineage_graph, "table.users")
-    assert "Customer" in output
-    assert "User data" in output
+    context = viewer.get_node_context('node1')
+    
+    assert context['node_id'] == 'node1'
+    assert len(context['business_terms']) == 1
+    assert context['business_terms'][0]['name'] == 'Revenue'
+    assert context['owner']['name'] == 'Jane Smith'
+
+
+def test_lineage_graph_enrichment():
+    store = MetadataStore()
+    store.add_term('t1', 'Revenue', 'Total revenue', 'Finance')
+    enricher = LineageEnricher(store)
+    enricher.enrich_node('node1', term_ids=['t1'])
+    
+    viewer = ContextViewer(enricher)
+    lineage = {'nodes': [{'id': 'node1', 'name': 'Table1'}], 'edges': []}
+    enriched = viewer.get_lineage_with_context(lineage)
+    
+    assert len(enriched['nodes']) == 1
+    assert 'context' in enriched['nodes'][0]
+
+
+def test_search_by_term():
+    store = MetadataStore()
+    store.add_term('t1', 'Revenue', 'Total revenue', 'Finance')
+    enricher = LineageEnricher(store)
+    enricher.enrich_node('node1', term_ids=['t1'])
+    enricher.enrich_node('node2', term_ids=['t1'])
+    
+    viewer = ContextViewer(enricher)
+    results = viewer.search_by_term('Revenue')
+    
+    assert len(results) == 2
+    assert 'node1' in results
+    assert 'node2' in results
