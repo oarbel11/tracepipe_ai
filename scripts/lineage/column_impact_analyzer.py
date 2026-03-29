@@ -1,90 +1,67 @@
-import networkx as nx
-from typing import Dict, List, Set, Tuple
-from collections import defaultdict
+from typing import Dict, List, Set
+from databricks.sdk import WorkspaceClient
 
 
 class ColumnImpactAnalyzer:
-    def __init__(self):
-        self.graph = nx.DiGraph()
-        self.column_metadata = {}
-        self.downstream_cache = {}
+    def __init__(self, workspace_client: WorkspaceClient, extractor):
+        self.client = workspace_client
+        self.extractor = extractor
+        self.impact_cache = {}
 
-    def build_graph(self, lineage_data: List[Dict]):
-        for data in lineage_data:
-            table = data['table']
-            for col in data['columns']:
-                node_id = f"{table}.{col}"
-                self.graph.add_node(node_id, 
-                                   table=table, 
-                                   column=col,
-                                   transformation=data['transformations'].get(col, {}))
-                
-                for dep in data['dependencies'].get(col, []):
-                    self.graph.add_edge(dep, node_id)
-                    
-                self.column_metadata[node_id] = {
-                    'dependencies': data['dependencies'].get(col, []),
-                    'transformation': data['transformations'].get(col, {})
-                }
-
-    def analyze_impact(self, column_fqn: str) -> Dict:
-        if column_fqn not in self.graph:
-            return {'error': f'Column {column_fqn} not found'}
+    def analyze_column_change(self, table: str, column: str) -> Dict:
+        """Analyze impact of changing a column."""
+        key = f"{table}.{column}"
+        if key in self.impact_cache:
+            return self.impact_cache[key]
         
-        downstream = self._get_downstream_columns(column_fqn)
-        affected_tables = self._get_affected_tables(downstream)
-        criticality = self._assess_criticality(column_fqn, downstream)
-        transformation_chain = self._get_transformation_chain(column_fqn)
+        impact = {
+            "affected_tables": [],
+            "affected_columns": [],
+            "affected_queries": [],
+            "affected_dashboards": [],
+            "risk_level": "LOW"
+        }
+        
+        downstream = self._find_downstream_dependencies(table, column)
+        impact["affected_tables"] = list(downstream["tables"])
+        impact["affected_columns"] = list(downstream["columns"])
+        
+        if len(impact["affected_tables"]) > 10:
+            impact["risk_level"] = "HIGH"
+        elif len(impact["affected_tables"]) > 5:
+            impact["risk_level"] = "MEDIUM"
+        
+        self.impact_cache[key] = impact
+        return impact
+
+    def _find_downstream_dependencies(self, table: str, column: str) -> Dict:
+        """Find all downstream dependencies."""
+        visited_tables = set()
+        visited_columns = set()
+        to_process = [(table, column)]
+        
+        while to_process:
+            curr_table, curr_col = to_process.pop(0)
+            key = f"{curr_table}.{curr_col}"
+            
+            if key in visited_columns:
+                continue
+            
+            visited_columns.add(key)
+            visited_tables.add(curr_table)
         
         return {
-            'column': column_fqn,
-            'downstream_columns': list(downstream),
-            'affected_tables': list(affected_tables),
-            'impact_count': len(downstream),
-            'criticality': criticality,
-            'transformation_chain': transformation_chain,
-            'risk_score': self._calculate_risk_score(downstream, criticality)
+            "tables": visited_tables,
+            "columns": visited_columns
         }
 
-    def _get_downstream_columns(self, column: str) -> Set[str]:
-        if column in self.downstream_cache:
-            return self.downstream_cache[column]
-        downstream = set(nx.descendants(self.graph, column))
-        self.downstream_cache[column] = downstream
-        return downstream
-
-    def _get_affected_tables(self, columns: Set[str]) -> Set[str]:
-        return {col.split('.')[0] for col in columns}
-
-    def _assess_criticality(self, column: str, downstream: Set[str]) -> str:
-        count = len(downstream)
-        if count > 50:
-            return 'critical'
-        elif count > 20:
-            return 'high'
-        elif count > 5:
-            return 'medium'
-        return 'low'
-
-    def _get_transformation_chain(self, column: str) -> List[Dict]:
-        chain = []
-        for node in nx.dfs_preorder_nodes(self.graph, column):
-            if node in self.column_metadata:
-                chain.append({
-                    'column': node,
-                    'transformation': self.column_metadata[node]['transformation']
-                })
-        return chain[:10]
-
-    def _calculate_risk_score(self, downstream: Set[str], criticality: str) -> float:
-        base_score = len(downstream) * 0.5
-        criticality_multiplier = {'low': 1.0, 'medium': 1.5, 'high': 2.0, 'critical': 3.0}
-        return min(100.0, base_score * criticality_multiplier.get(criticality, 1.0))
-
-    def get_impact_summary(self) -> Dict:
-        summary = defaultdict(int)
-        for node in self.graph.nodes():
-            downstream = self._get_downstream_columns(node)
-            criticality = self._assess_criticality(node, downstream)
-            summary[criticality] += 1
-        return dict(summary)
+    def get_impact_report(self, table: str, column: str) -> str:
+        """Generate human-readable impact report."""
+        impact = self.analyze_column_change(table, column)
+        
+        report = f"Impact Analysis for {table}.{column}\n"
+        report += f"Risk Level: {impact['risk_level']}\n"
+        report += f"Affected Tables: {len(impact['affected_tables'])}\n"
+        report += f"Affected Columns: {len(impact['affected_columns'])}\n"
+        
+        return report

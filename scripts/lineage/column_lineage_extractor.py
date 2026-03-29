@@ -1,91 +1,81 @@
-import sqlparse
-from sqlparse.sql import Identifier, Function, Where, Comparison
-from typing import Dict, List, Set, Tuple
 import re
+from typing import Dict, List, Set, Optional
+from databricks.sdk import WorkspaceClient
 
 
 class ColumnLineageExtractor:
-    def __init__(self):
-        self.lineage_graph = {}
-        self.transformations = {}
-        self.udf_registry = {}
+    def __init__(self, workspace_client: WorkspaceClient):
+        self.client = workspace_client
+        self.lineage_cache = {}
 
-    def extract_from_sql(self, sql: str, table_name: str) -> Dict:
-        parsed = sqlparse.parse(sql)[0]
-        columns = self._extract_columns(parsed)
-        dependencies = self._extract_dependencies(parsed, columns)
-        transformations = self._extract_transformations(parsed, columns)
+    def extract_from_sql(self, sql: str, source_table: str) -> Dict[str, List[str]]:
+        """Extract column lineage from SQL query."""
+        lineage = {}
+        sql_upper = sql.upper()
         
-        return {
-            'table': table_name,
-            'columns': columns,
-            'dependencies': dependencies,
-            'transformations': transformations
+        select_match = re.search(r"SELECT\s+(.+?)\s+FROM", sql_upper, re.DOTALL)
+        if not select_match:
+            return lineage
+        
+        select_clause = select_match.group(1)
+        columns = [c.strip() for c in select_clause.split(",")]
+        
+        for col in columns:
+            if "AS" in col:
+                parts = col.split("AS")
+                target = parts[1].strip()
+                source_expr = parts[0].strip()
+            else:
+                target = col.strip()
+                source_expr = col.strip()
+            
+            source_cols = self._extract_column_references(source_expr)
+            lineage[target] = source_cols
+        
+        return lineage
+
+    def _extract_column_references(self, expression: str) -> List[str]:
+        """Extract column references from expression."""
+        pattern = r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b"
+        matches = re.findall(pattern, expression)
+        
+        keywords = {"SUM", "AVG", "COUNT", "MAX", "MIN", "CASE", "WHEN", 
+                    "THEN", "ELSE", "END", "AND", "OR", "NOT", "AS"}
+        return [m for m in matches if m.upper() not in keywords]
+
+    def extract_from_dataframe(self, df_code: str) -> Dict[str, List[str]]:
+        """Extract lineage from DataFrame transformations."""
+        lineage = {}
+        
+        select_pattern = r"\.select\(([^)]+)\)"
+        matches = re.findall(select_pattern, df_code)
+        
+        for match in matches:
+            cols = [c.strip().strip('"').strip("'") for c in match.split(",")]
+            for col in cols:
+                lineage[col] = [col]
+        
+        withcolumn_pattern = r"\.withColumn\(['\"]([^'\"]+)['\"],\s*(.+?)\)"
+        matches = re.findall(withcolumn_pattern, df_code)
+        
+        for col_name, expr in matches:
+            source_cols = self._extract_column_references(expr)
+            lineage[col_name] = source_cols
+        
+        return lineage
+
+    def get_column_lineage(self, table_name: str, column_name: str) -> Dict:
+        """Get full lineage for a specific column."""
+        key = f"{table_name}.{column_name}"
+        if key in self.lineage_cache:
+            return self.lineage_cache[key]
+        
+        lineage_data = {
+            "column": column_name,
+            "table": table_name,
+            "upstream": [],
+            "transformations": []
         }
-
-    def _extract_columns(self, parsed) -> List[str]:
-        columns = []
-        for token in parsed.tokens:
-            if token.ttype is None and 'SELECT' in str(token).upper():
-                select_part = str(token)
-                for col in re.findall(r'(\w+)\s+AS\s+\w+|,\s*(\w+)', select_part, re.IGNORECASE):
-                    col_name = col[0] or col[1]
-                    if col_name and col_name.upper() not in ['SELECT', 'FROM', 'WHERE']:
-                        columns.append(col_name)
-        return columns
-
-    def _extract_dependencies(self, parsed, columns: List[str]) -> Dict[str, List[str]]:
-        deps = {}
-        sql_str = str(parsed)
         
-        for col in columns:
-            pattern = rf'{col}\s*=\s*([\w\s\.\+\-\*/\(\)]+)'
-            matches = re.findall(pattern, sql_str, re.IGNORECASE)
-            if matches:
-                source_cols = re.findall(r'\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b', matches[0])
-                deps[col] = [f"{table}.{col}" for table, col in source_cols]
-        return deps
-
-    def _extract_transformations(self, parsed, columns: List[str]) -> Dict[str, Dict]:
-        trans = {}
-        sql_str = str(parsed)
-        
-        for col in columns:
-            trans[col] = {
-                'type': self._detect_transformation_type(sql_str, col),
-                'expression': self._extract_expression(sql_str, col),
-                'udfs': self._extract_udfs(sql_str, col)
-            }
-        return trans
-
-    def _detect_transformation_type(self, sql: str, col: str) -> str:
-        pattern = rf'{col}\s*[=,]\s*([^,\n]+)'
-        match = re.search(pattern, sql, re.IGNORECASE)
-        if not match:
-            return 'direct'
-        expr = match.group(1).lower()
-        if any(f in expr for f in ['sum(', 'avg(', 'count(', 'max(', 'min(']):
-            return 'aggregation'
-        elif any(op in expr for op in ['+', '-', '*', '/']):
-            return 'arithmetic'
-        elif 'case' in expr:
-            return 'conditional'
-        elif 'cast' in expr or '::' in expr:
-            return 'type_conversion'
-        return 'function'
-
-    def _extract_expression(self, sql: str, col: str) -> str:
-        pattern = rf'{col}\s*[=,]\s*([^,\n]+)'
-        match = re.search(pattern, sql, re.IGNORECASE)
-        return match.group(1).strip() if match else ''
-
-    def _extract_udfs(self, sql: str, col: str) -> List[str]:
-        pattern = rf'{col}\s*[=,]\s*([^,\n]+)'
-        match = re.search(pattern, sql, re.IGNORECASE)
-        if not match:
-            return []
-        expr = match.group(1)
-        udf_pattern = r'\b([a-z_]\w*)\s*\('
-        potential_udfs = re.findall(udf_pattern, expr, re.IGNORECASE)
-        builtins = {'sum', 'avg', 'count', 'max', 'min', 'cast', 'coalesce', 'case'}
-        return [u for u in potential_udfs if u.lower() not in builtins]
+        self.lineage_cache[key] = lineage_data
+        return lineage_data

@@ -1,112 +1,74 @@
+from typing import Dict, List
 import json
-from typing import Dict, List, Set
 
 
 class LineageVisualizer:
-    def __init__(self, impact_analyzer):
-        self.analyzer = impact_analyzer
+    def __init__(self, extractor, analyzer):
+        self.extractor = extractor
+        self.analyzer = analyzer
 
-    def generate_interactive_view(self, column_fqn: str, depth: int = 3) -> Dict:
-        impact = self.analyzer.analyze_impact(column_fqn)
-        if 'error' in impact:
-            return impact
+    def generate_lineage_graph(self, table: str, column: str) -> Dict:
+        """Generate lineage graph structure."""
+        lineage = self.extractor.get_column_lineage(table, column)
         
-        graph_data = self._build_graph_data(column_fqn, depth)
-        drill_down_data = self._build_drill_down_data(column_fqn)
+        nodes = [{
+            "id": f"{table}.{column}",
+            "label": column,
+            "type": "column",
+            "table": table
+        }]
         
-        return {
-            'type': 'interactive_lineage',
-            'root_column': column_fqn,
-            'graph': graph_data,
-            'drill_down': drill_down_data,
-            'impact_summary': impact,
-            'metadata': self._get_column_metadata(column_fqn)
-        }
-
-    def _build_graph_data(self, column: str, depth: int) -> Dict:
-        nodes = []
         edges = []
-        visited = set()
+        for upstream in lineage.get("upstream", []):
+            nodes.append({
+                "id": upstream,
+                "label": upstream.split(".")[-1],
+                "type": "column"
+            })
+            edges.append({
+                "source": upstream,
+                "target": f"{table}.{column}"
+            })
         
-        def traverse(col, current_depth):
-            if current_depth > depth or col in visited:
-                return
-            visited.add(col)
-            
-            if col in self.analyzer.graph:
-                node_data = self.analyzer.graph.nodes[col]
-                nodes.append({
-                    'id': col,
-                    'label': col.split('.')[-1],
-                    'table': col.split('.')[0],
-                    'type': node_data.get('transformation', {}).get('type', 'unknown'),
-                    'depth': current_depth
-                })
-                
-                for successor in self.analyzer.graph.successors(col):
-                    edges.append({'source': col, 'target': successor})
-                    traverse(successor, current_depth + 1)
-        
-        traverse(column, 0)
-        return {'nodes': nodes, 'edges': edges}
+        return {"nodes": nodes, "edges": edges}
 
-    def _build_drill_down_data(self, column: str) -> List[Dict]:
-        drill_down = []
-        if column not in self.analyzer.column_metadata:
-            return drill_down
+    def generate_impact_graph(self, table: str, column: str) -> Dict:
+        """Generate impact analysis graph."""
+        impact = self.analyzer.analyze_column_change(table, column)
         
-        metadata = self.analyzer.column_metadata[column]
-        transformation = metadata.get('transformation', {})
+        nodes = [{
+            "id": f"{table}.{column}",
+            "label": column,
+            "type": "source",
+            "risk": impact["risk_level"]
+        }]
         
-        drill_down.append({
-            'level': 'column',
-            'name': column,
-            'transformation_type': transformation.get('type', 'unknown'),
-            'expression': transformation.get('expression', ''),
-            'udfs': transformation.get('udfs', [])
-        })
+        edges = []
+        for affected_table in impact["affected_tables"]:
+            nodes.append({
+                "id": affected_table,
+                "label": affected_table,
+                "type": "affected_table"
+            })
+            edges.append({
+                "source": f"{table}.{column}",
+                "target": affected_table
+            })
         
-        for dep in metadata.get('dependencies', []):
-            if dep in self.analyzer.column_metadata:
-                dep_meta = self.analyzer.column_metadata[dep]
-                drill_down.append({
-                    'level': 'dependency',
-                    'name': dep,
-                    'transformation_type': dep_meta.get('transformation', {}).get('type', 'unknown')
-                })
-        
-        return drill_down
+        return {"nodes": nodes, "edges": edges, "risk": impact["risk_level"]}
 
-    def _get_column_metadata(self, column: str) -> Dict:
-        if column not in self.analyzer.graph:
-            return {}
-        node_data = self.analyzer.graph.nodes[column]
-        return {
-            'table': node_data.get('table', ''),
-            'column': node_data.get('column', ''),
-            'transformation': node_data.get('transformation', {})
-        }
+    def export_to_json(self, graph: Dict, output_path: str):
+        """Export graph to JSON file."""
+        with open(output_path, "w") as f:
+            json.dump(graph, f, indent=2)
 
-    def export_json(self, column_fqn: str, filepath: str):
-        view_data = self.generate_interactive_view(column_fqn)
-        with open(filepath, 'w') as f:
-            json.dump(view_data, f, indent=2)
-
-    def export_markdown(self, column_fqn: str) -> str:
-        view = self.generate_interactive_view(column_fqn)
-        if 'error' in view:
-            return f"# Error\n{view['error']}"
+    def get_interactive_html(self, table: str, column: str) -> str:
+        """Generate interactive HTML visualization."""
+        graph = self.generate_lineage_graph(table, column)
         
-        md = [f"# Column Lineage: {column_fqn}\n"]
-        impact = view['impact_summary']
-        md.append(f"**Impact:** {impact['impact_count']} downstream columns")
-        md.append(f"**Criticality:** {impact['criticality']}")
-        md.append(f"**Risk Score:** {impact['risk_score']:.2f}\n")
+        html = "<html><body><h1>Column Lineage</h1>"
+        html += f"<h2>{table}.{column}</h2>"
+        html += f"<pre>{json.dumps(graph, indent=2)}</pre>"
+        html += "</body></html>"
         
-        md.append("## Transformation Chain\n")
-        for item in view['drill_down']:
-            md.append(f"- **{item['name']}** ({item['transformation_type']})")
-            if item.get('expression'):
-                md.append(f"  - Expression: `{item['expression']}`")
-        
-        return '\n'.join(md)
+        return html
