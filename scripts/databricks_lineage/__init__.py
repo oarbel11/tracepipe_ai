@@ -1,11 +1,11 @@
 """Databricks lineage extraction module."""
 
 from .lineage_extractor import DatabricksLineageExtractor
-from .lineage_graph import LineageGraphBuilder
-from .cli import lineage_command
+from .sql_parser import SQLLineageParser
+from .visualizer import LineageVisualizer
 
 __all__ = [
-    "DatabricksLineageExtractor",
-    "LineageGraphBuilder",
-    "lineage_command",
+    'DatabricksLineageExtractor',
+    'SQLLineageParser',
+    'LineageVisualizer'
 ]

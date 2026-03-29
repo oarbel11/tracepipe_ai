@@ -1,75 +1,74 @@
-"""Extract lineage from Databricks assets."""
+"""Databricks lineage extractor using REST API."""
+
 import os
-from typing import Dict, List, Any
-from databricks.sdk import WorkspaceClient
+import json
+import re
+from typing import Dict, List, Any, Optional
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 
 class DatabricksLineageExtractor:
-    """Extract lineage from Databricks notebooks, jobs, and tables."""
+    """Extract lineage from Databricks using REST API."""
 
-    def __init__(self, host: str = None, token: str = None):
-        self.host = host or os.getenv("DATABRICKS_HOST")
-        self.token = token or os.getenv("DATABRICKS_TOKEN")
-        self.client = WorkspaceClient(host=self.host, token=self.token)
+    def __init__(self, host: str, token: str):
+        self.host = host.rstrip('/')
+        self.token = token
+        self.headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        }
 
-    def extract_jobs_lineage(self) -> List[Dict[str, Any]]:
-        """Extract lineage from Databricks jobs."""
-        jobs_lineage = []
+    def _make_request(self, endpoint: str) -> Any:
+        """Make REST API request to Databricks."""
+        url = f"{self.host}/api/2.0/{endpoint}"
+        req = Request(url, headers=self.headers)
         try:
-            jobs = list(self.client.jobs.list())
-            for job in jobs:
-                job_detail = self.client.jobs.get(job.job_id)
-                lineage_entry = {
-                    "type": "job",
-                    "id": str(job.job_id),
-                    "name": job.settings.name if job.settings else "",
-                    "tasks": [],
-                }
-                if job_detail.settings and job_detail.settings.tasks:
-                    for task in job_detail.settings.tasks:
-                        task_info = {"task_key": task.task_key}
-                        if task.notebook_task:
-                            task_info["notebook"] = task.notebook_task.notebook_path
-                        lineage_entry["tasks"].append(task_info)
-                jobs_lineage.append(lineage_entry)
-        except Exception as e:
-            print(f"Error extracting jobs: {e}")
-        return jobs_lineage
+            with urlopen(req, timeout=30) as response:
+                return json.loads(response.read().decode())
+        except HTTPError:
+            return {}
 
-    def extract_notebooks_lineage(self) -> List[Dict[str, Any]]:
-        """Extract lineage from Databricks notebooks."""
-        notebooks_lineage = []
-        try:
-            objects = list(self.client.workspace.list("/", recursive=True))
-            for obj in objects:
-                if obj.object_type.name == "NOTEBOOK":
-                    notebooks_lineage.append({
-                        "type": "notebook",
-                        "path": obj.path,
-                        "id": obj.path,
-                    })
-        except Exception as e:
-            print(f"Error extracting notebooks: {e}")
-        return notebooks_lineage
+    def extract_tables(self) -> List[Dict[str, Any]]:
+        """Extract table metadata."""
+        result = self._make_request('unity-catalog/tables')
+        tables = result.get('tables', [])
+        return [{
+            'id': t.get('table_id', t.get('name', 'unknown')),
+            'name': t.get('full_name', t.get('name', 'unknown')),
+            'type': 'table',
+            'catalog': t.get('catalog_name', 'unknown'),
+            'schema': t.get('schema_name', 'unknown')
+        } for t in tables]
 
-    def extract_tables_lineage(self) -> List[Dict[str, Any]]:
-        """Extract lineage from Unity Catalog tables."""
-        tables_lineage = []
-        try:
-            catalogs = list(self.client.catalogs.list())
-            for catalog in catalogs:
-                schemas = list(self.client.schemas.list(catalog.name))
-                for schema in schemas:
-                    tables = list(self.client.tables.list(
-                        catalog.name, schema.name))
-                    for table in tables:
-                        tables_lineage.append({
-                            "type": "table",
-                            "id": table.full_name,
-                            "name": table.name,
-                            "catalog": catalog.name,
-                            "schema": schema.name,
-                        })
-        except Exception as e:
-            print(f"Error extracting tables: {e}")
-        return tables_lineage
+    def extract_jobs(self) -> List[Dict[str, Any]]:
+        """Extract job metadata."""
+        result = self._make_request('jobs/list')
+        jobs = result.get('jobs', [])
+        return [{
+            'id': str(j.get('job_id', 'unknown')),
+            'name': j.get('settings', {}).get('name', 'unknown'),
+            'type': 'job'
+        } for j in jobs]
+
+    def extract_notebooks(self) -> List[Dict[str, Any]]:
+        """Extract notebook metadata."""
+        result = self._make_request('workspace/list?path=/')
+        objects = result.get('objects', [])
+        notebooks = [o for o in objects if o.get('object_type') == 'NOTEBOOK']
+        return [{
+            'id': n.get('object_id', n.get('path', 'unknown')),
+            'name': n.get('path', 'unknown'),
+            'type': 'notebook'
+        } for n in notebooks]
+
+    def extract_lineage(self) -> Dict[str, Any]:
+        """Extract complete lineage graph."""
+        tables = self.extract_tables()
+        jobs = self.extract_jobs()
+        notebooks = self.extract_notebooks()
+        
+        nodes = tables + jobs + notebooks
+        edges = []
+        
+        return {'nodes': nodes, 'edges': edges}

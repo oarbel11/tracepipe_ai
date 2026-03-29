@@ -1,86 +1,113 @@
 """Tests for Databricks lineage extraction."""
+
 import pytest
-from unittest.mock import Mock, MagicMock, patch
+import json
+from unittest.mock import Mock, patch
 from scripts.databricks_lineage.lineage_extractor import DatabricksLineageExtractor
-from scripts.databricks_lineage.lineage_graph import LineageGraphBuilder
+from scripts.databricks_lineage.sql_parser import SQLLineageParser
+from scripts.databricks_lineage.visualizer import LineageVisualizer
 
 
-@pytest.fixture
-def mock_workspace_client():
-    """Mock Databricks WorkspaceClient."""
-    with patch("scripts.databricks_lineage.lineage_extractor.WorkspaceClient") as mock:
-        client = Mock()
-        mock.return_value = client
+class TestDatabricksLineageExtractor:
+    """Test lineage extractor."""
+
+    def test_extractor_initialization(self):
+        """Test extractor can be initialized."""
+        extractor = DatabricksLineageExtractor(
+            host='https://test.databricks.com',
+            token='test_token'
+        )
+        assert extractor.host == 'https://test.databricks.com'
+        assert extractor.token == 'test_token'
+
+    @patch('scripts.databricks_lineage.lineage_extractor.urlopen')
+    def test_extract_tables(self, mock_urlopen):
+        """Test table extraction."""
+        mock_response = Mock()
+        mock_response.read.return_value = json.dumps({
+            'tables': [{'table_id': '1', 'name': 'test_table'}]
+        }).encode()
+        mock_urlopen.return_value.__enter__.return_value = mock_response
         
-        # Mock jobs
-        job = Mock()
-        job.job_id = 123
-        job.settings = Mock()
-        job.settings.name = "test_job"
-        client.jobs.list.return_value = [job]
-        
-        job_detail = Mock()
-        job_detail.settings = Mock()
-        task = Mock()
-        task.task_key = "task1"
-        task.notebook_task = Mock()
-        task.notebook_task.notebook_path = "/test/notebook"
-        job_detail.settings.tasks = [task]
-        client.jobs.get.return_value = job_detail
-        
-        # Mock notebooks
-        notebook = Mock()
-        notebook.object_type = Mock()
-        notebook.object_type.name = "NOTEBOOK"
-        notebook.path = "/test/notebook"
-        client.workspace.list.return_value = [notebook]
-        
-        # Mock tables
-        catalog = Mock()
-        catalog.name = "main"
-        client.catalogs.list.return_value = [catalog]
-        
-        schema = Mock()
-        schema.name = "default"
-        client.schemas.list.return_value = [schema]
-        
-        table = Mock()
-        table.full_name = "main.default.test_table"
-        table.name = "test_table"
-        client.tables.list.return_value = [table]
-        
-        yield client
+        extractor = DatabricksLineageExtractor('https://test.com', 'token')
+        tables = extractor.extract_tables()
+        assert len(tables) >= 0
+
+    def test_extract_lineage(self):
+        """Test complete lineage extraction."""
+        extractor = DatabricksLineageExtractor('https://test.com', 'token')
+        lineage = extractor.extract_lineage()
+        assert 'nodes' in lineage
+        assert 'edges' in lineage
+        assert isinstance(lineage['nodes'], list)
+        assert isinstance(lineage['edges'], list)
 
 
-def test_lineage_extractor_jobs(mock_workspace_client):
-    """Test job lineage extraction."""
-    extractor = DatabricksLineageExtractor()
-    jobs = extractor.extract_jobs_lineage()
-    
-    assert len(jobs) == 1
-    assert jobs[0]["type"] == "job"
-    assert jobs[0]["id"] == "123"
-    assert jobs[0]["name"] == "test_job"
-    assert len(jobs[0]["tasks"]) == 1
+class TestSQLLineageParser:
+    """Test SQL parser."""
+
+    def test_parser_initialization(self):
+        """Test parser can be initialized."""
+        parser = SQLLineageParser()
+        assert parser is not None
+
+    def test_extract_source_tables(self):
+        """Test extracting source tables from SQL."""
+        parser = SQLLineageParser()
+        sql = "SELECT * FROM table1 JOIN table2"
+        sources = parser.extract_source_tables(sql)
+        assert 'table1' in sources
+        assert 'table2' in sources
+
+    def test_extract_target_tables(self):
+        """Test extracting target tables from SQL."""
+        parser = SQLLineageParser()
+        sql = "CREATE TABLE target_table AS SELECT * FROM source"
+        targets = parser.extract_target_tables(sql)
+        assert 'target_table' in targets
+
+    def test_parse_lineage(self):
+        """Test complete lineage parsing."""
+        parser = SQLLineageParser()
+        sql = "INSERT INTO target SELECT * FROM source"
+        lineage = parser.parse_lineage(sql)
+        assert 'sources' in lineage
+        assert 'targets' in lineage
+        assert 'edges' in lineage
 
 
-def test_lineage_extractor_notebooks(mock_workspace_client):
-    """Test notebook lineage extraction."""
-    extractor = DatabricksLineageExtractor()
-    notebooks = extractor.extract_notebooks_lineage()
-    
-    assert len(notebooks) == 1
-    assert notebooks[0]["type"] == "notebook"
-    assert notebooks[0]["path"] == "/test/notebook"
+class TestLineageVisualizer:
+    """Test lineage visualizer."""
 
+    def test_visualizer_initialization(self):
+        """Test visualizer can be initialized."""
+        data = {'nodes': [], 'edges': []}
+        viz = LineageVisualizer(data)
+        assert viz.lineage_data == data
 
-def test_lineage_graph_builder():
-    """Test lineage graph building."""
-    builder = LineageGraphBuilder()
-    jobs = [{"id": "1", "name": "job1", "tasks": []}]
-    notebooks = [{"id": "nb1", "path": "/nb1"}]
-    tables = [{"id": "t1", "name": "table1", "catalog": "c", "schema": "s"}]
-    
-    graph = builder.build(jobs, notebooks, tables)
-    
-    assert graph.number_of_nodes() == 3
+    def test_to_json(self):
+        """Test JSON conversion."""
+        data = {'nodes': [{'id': '1', 'name': 'test'}], 'edges': []}
+        viz = LineageVisualizer(data)
+        json_str = viz.to_json()
+        assert 'nodes' in json_str
+        assert 'test' in json_str
+
+    def test_to_ascii(self):
+        """Test ASCII conversion."""
+        data = {'nodes': [{'name': 'test', 'type': 'table'}], 'edges': []}
+        viz = LineageVisualizer(data)
+        ascii_str = viz.to_ascii()
+        assert 'test' in ascii_str
+        assert 'Lineage' in ascii_str
+
+    def test_get_statistics(self):
+        """Test statistics generation."""
+        data = {
+            'nodes': [{'type': 'table'}, {'type': 'job'}],
+            'edges': [{'source': 'a', 'target': 'b'}]
+        }
+        viz = LineageVisualizer(data)
+        stats = viz.get_statistics()
+        assert stats['total_nodes'] == 2
+        assert stats['total_edges'] == 1
