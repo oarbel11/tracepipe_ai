@@ -1,72 +1,49 @@
-"""Impact analysis engine for interactive dependency visualization."""
-from typing import Dict, List, Set, Optional, Any
-from dataclasses import dataclass
+"""Impact analysis engine for Tracepipe AI."""
+from typing import List, Dict, Set, Optional
+from scripts.peer_review.lineage_graph import LineageGraph, LineageNode
 
-
-@dataclass
 class ImpactNode:
-    """Node in impact analysis graph."""
-    asset_id: str
-    asset_type: str
-    depth: int
-    metadata: Dict[str, Any]
-
+    def __init__(self, node_id: str, node_type: str, depth: int, metadata: dict):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.depth = depth
+        self.metadata = metadata
 
 class ImpactAnalysisEngine:
-    """Engine for computing downstream dependencies."""
+    def __init__(self, lineage_graph: LineageGraph):
+        self.graph = lineage_graph
 
-    def __init__(self, lineage_graph: Dict[str, Any]):
-        """Initialize with lineage graph."""
-        self.lineage_graph = lineage_graph
-        self.edges = lineage_graph.get("edges", [])
-        self.nodes = {n["id"]: n for n in lineage_graph.get("nodes", [])}
-
-    def compute_downstream_impact(
-        self,
-        asset_id: str,
-        filters: Optional[Dict[str, Any]] = None
-    ) -> List[ImpactNode]:
-        """Compute downstream dependencies with optional filters."""
-        visited: Set[str] = set()
-        result: List[ImpactNode] = []
-        queue: List[tuple] = [(asset_id, 0)]
-
-        while queue:
-            current_id, depth = queue.pop(0)
-            if current_id in visited:
-                continue
-            visited.add(current_id)
-
-            node = self.nodes.get(current_id)
-            if not node:
-                continue
-
-            if self._matches_filters(node, filters):
-                result.append(ImpactNode(
-                    asset_id=current_id,
-                    asset_type=node.get("type", "unknown"),
-                    depth=depth,
-                    metadata=node.get("metadata", {})
-                ))
-
-            for edge in self.edges:
-                if edge["source"] == current_id:
-                    queue.append((edge["target"], depth + 1))
-
+    def analyze_downstream_impact(self, node_id: str, filters: Dict = None) -> List[ImpactNode]:
+        filters = filters or {}
+        visited = set()
+        result = []
+        self._traverse_downstream(node_id, 0, visited, result, filters)
         return result
 
-    def _matches_filters(self, node: Dict, filters: Optional[Dict]) -> bool:
-        """Check if node matches filter criteria."""
-        if not filters:
-            return True
-        metadata = node.get("metadata", {})
-        for key, value in filters.items():
-            if key == "tags" and value:
-                node_tags = metadata.get("tags", [])
-                if not any(tag in node_tags for tag in value):
-                    return False
-            elif key == "owner" and metadata.get("owner") != value:
+    def _traverse_downstream(self, node_id: str, depth: int, visited: Set, result: List, filters: Dict):
+        if node_id in visited:
+            return
+        visited.add(node_id)
+        node = self.graph.get_node(node_id)
+        if not node:
+            return
+        if self._matches_filters(node, filters):
+            result.append(ImpactNode(node_id, node.node_type, depth, node.metadata))
+        for downstream_id in self.graph.get_downstream_nodes(node_id):
+            self._traverse_downstream(downstream_id, depth + 1, visited, result, filters)
+
+    def _matches_filters(self, node: LineageNode, filters: Dict) -> bool:
+        if 'tags' in filters and filters['tags']:
+            if not any(tag in node.tags for tag in filters['tags']):
                 return False
-            elif key == "quality_status" and metadata.get("quality_status") != value:
+        if 'owner' in filters and filters['owner']:
+            if node.owner != filters['owner']:
+                return False
+        if 'quality_status' in filters and filters['quality_status']:
+            if node.quality_status != filters['quality_status']:
                 return False
         return True
+
+    def get_blast_radius(self, node_id: str) -> int:
+        impact_nodes = self.analyze_downstream_impact(node_id)
+        return len(impact_nodes)

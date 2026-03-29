@@ -1,81 +1,61 @@
-"""Tests for impact analysis and governance policy features."""
+"""Tests for Impact Analysis & Governance Policy Overlay."""
 import pytest
+from scripts.peer_review.lineage_graph import LineageGraph, LineageNode
 from scripts.peer_review.impact_analysis import ImpactAnalysisEngine, ImpactNode
-from scripts.peer_review.governance_policy import (
-    GovernancePolicyEngine,
-    GovernancePolicy,
-    PolicyViolation
-)
+from scripts.peer_review.governance_policy import GovernancePolicyEngine, GovernancePolicy
 
+def test_lineage_graph_creation():
+    graph = LineageGraph()
+    node1 = LineageNode('table1', 'table', {'tags': ['PII'], 'owner': 'team_a'})
+    graph.add_node(node1)
+    assert graph.get_node('table1') == node1
 
-@pytest.fixture
-def sample_lineage_graph():
-    """Sample lineage graph for testing."""
-    return {
-        "nodes": [
-            {"id": "table1", "type": "table", "metadata": {"tags": ["PII"], "owner": "team_a"}},
-            {"id": "table2", "type": "table", "metadata": {"tags": ["analytics"], "owner": "team_b"}},
-            {"id": "view1", "type": "view", "metadata": {"tags": ["PII"], "quality_status": "good"}}
-        ],
-        "edges": [
-            {"source": "table1", "target": "view1"},
-            {"source": "view1", "target": "table2"}
-        ]
-    }
+def test_downstream_impact_analysis():
+    graph = LineageGraph()
+    node1 = LineageNode('table1', 'table', {'tags': ['PII'], 'owner': 'team_a'})
+    node2 = LineageNode('view1', 'view', {'tags': ['PII'], 'owner': 'team_b'})
+    graph.add_node(node1)
+    graph.add_node(node2)
+    graph.add_edge('table1', 'view1')
+    engine = ImpactAnalysisEngine(graph)
+    impacts = engine.analyze_downstream_impact('table1')
+    assert len(impacts) == 2
+    assert impacts[0].node_id == 'table1'
+    assert impacts[1].node_id == 'view1'
 
+def test_impact_analysis_with_filters():
+    graph = LineageGraph()
+    node1 = LineageNode('table1', 'table', {'tags': ['PII'], 'owner': 'team_a'})
+    node2 = LineageNode('view1', 'view', {'tags': ['PII'], 'owner': 'team_b'})
+    graph.add_node(node1)
+    graph.add_node(node2)
+    graph.add_edge('table1', 'view1')
+    engine = ImpactAnalysisEngine(graph)
+    impacts = engine.analyze_downstream_impact('table1', {'owner': 'team_a'})
+    assert len(impacts) == 1
+    assert impacts[0].node_id == 'table1'
 
-def test_impact_analysis_downstream(sample_lineage_graph):
-    """Test downstream impact analysis."""
-    engine = ImpactAnalysisEngine(sample_lineage_graph)
-    impact = engine.compute_downstream_impact("table1")
-    assert len(impact) == 3
-    assert impact[0].asset_id == "table1"
-    assert impact[0].depth == 0
+def test_governance_policy_overlay():
+    graph = LineageGraph()
+    node1 = LineageNode('table1', 'table', {'tags': ['PII'], 'owner': 'team_a'})
+    graph.add_node(node1)
+    policy_engine = GovernancePolicyEngine(graph)
+    policy = GovernancePolicy('pol1', 'data_retention', {'days': 90}, ['PII'])
+    policy_engine.add_policy(policy)
+    policies = policy_engine.get_applicable_policies('table1')
+    assert len(policies) == 1
+    assert policies[0].policy_id == 'pol1'
 
-
-def test_impact_analysis_with_tag_filter(sample_lineage_graph):
-    """Test impact analysis with tag filter."""
-    engine = ImpactAnalysisEngine(sample_lineage_graph)
-    impact = engine.compute_downstream_impact("table1", filters={"tags": ["PII"]})
-    pii_assets = [node for node in impact if "PII" in node.metadata.get("tags", [])]
-    assert len(pii_assets) == 2
-
-
-def test_impact_analysis_with_owner_filter(sample_lineage_graph):
-    """Test impact analysis with owner filter."""
-    engine = ImpactAnalysisEngine(sample_lineage_graph)
-    impact = engine.compute_downstream_impact("table1", filters={"owner": "team_a"})
-    assert len(impact) == 1
-    assert impact[0].metadata["owner"] == "team_a"
-
-
-def test_governance_policy_evaluation(sample_lineage_graph):
-    """Test governance policy evaluation."""
-    policy = GovernancePolicy(
-        policy_id="pol1",
-        name="PII Tagging Required",
-        description="All tables must have PII tag",
-        rules={"required_tags": ["PII"]},
-        severity="high"
-    )
-    engine = GovernancePolicyEngine([policy])
-    violations = engine.evaluate_lineage(sample_lineage_graph)
-    assert len(violations) >= 1
-
-
-def test_governance_policy_no_violations():
-    """Test governance policy with no violations."""
-    graph = {
-        "nodes": [{"id": "t1", "type": "table", "metadata": {"tags": ["PII"]}}],
-        "edges": []
-    }
-    policy = GovernancePolicy(
-        policy_id="pol1",
-        name="PII Required",
-        description="Test",
-        rules={"required_tags": ["PII"]},
-        severity="high"
-    )
-    engine = GovernancePolicyEngine([policy])
-    violations = engine.evaluate_lineage(graph)
-    assert len(violations) == 0
+def test_blast_radius_calculation():
+    graph = LineageGraph()
+    node1 = LineageNode('table1', 'table', {'tags': ['PII']})
+    node2 = LineageNode('view1', 'view', {'tags': ['PII']})
+    node3 = LineageNode('view2', 'view', {'tags': ['PII']})
+    graph.add_node(node1)
+    graph.add_node(node2)
+    graph.add_node(node3)
+    graph.add_edge('table1', 'view1')
+    graph.add_edge('view1', 'view2')
+    engine = ImpactAnalysisEngine(graph)
+    radius = engine.get_blast_radius('table1')
+    assert radius == 3
