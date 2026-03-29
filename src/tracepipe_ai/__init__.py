@@ -1,14 +1,10 @@
-"""Tracepipe AI - Enterprise data lineage platform."""
+"""Tracepipe AI - Cross-workspace lineage unification for Databricks."""
+
 from src.tracepipe_ai.lineage_unification import (
-    LineageNode,
-    LineageEdge,
-    UnifiedLineageGraph,
     LineageUnifier,
+    WorkspaceConfig,
+    UnifiedLineageGraph,
 )
 
-__all__ = [
-    "LineageNode",
-    "LineageEdge",
-    "UnifiedLineageGraph",
-    "LineageUnifier",
-]
+__version__ = "0.1.0"
+__all__ = ["LineageUnifier", "WorkspaceConfig", "UnifiedLineageGraph"]

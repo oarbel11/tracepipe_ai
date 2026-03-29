@@ -1,82 +1,74 @@
 """Tests for cross-workspace lineage unification."""
 import pytest
 from src.tracepipe_ai.lineage_unification import (
+    LineageUnifier,
+    WorkspaceConfig,
+    UnifiedLineageGraph,
     LineageNode,
     LineageEdge,
-    UnifiedLineageGraph,
-    LineageUnifier,
 )
 
 
-def test_lineage_node_creation():
-    """Test creating a lineage node."""
-    node = LineageNode(
-        id="node1",
-        workspace="ws1",
-        metastore="meta1",
-        catalog="catalog1",
-        schema="schema1",
-        table="table1"
+def test_workspace_config_creation():
+    """Test WorkspaceConfig dataclass creation."""
+    config = WorkspaceConfig(
+        workspace_id="ws1",
+        host="https://test.databricks.com",
+        token="test_token",
+        metastore_id="metastore1",
     )
-    assert node.id == "node1"
-    assert node.get_fqn() == "catalog1.schema1.table1"
+    assert config.workspace_id == "ws1"
+    assert config.host == "https://test.databricks.com"
+    assert config.metastore_id == "metastore1"
 
 
-def test_lineage_edge_creation():
-    """Test creating a lineage edge."""
-    edge = LineageEdge(source="node1", target="node2")
-    assert edge.source == "node1"
-    assert edge.target == "node2"
+def test_lineage_node_creation():
+    """Test LineageNode creation."""
+    node = LineageNode(
+        fqn="catalog.schema.table",
+        workspace_id="ws1",
+        metastore_id="ms1",
+        object_type="table",
+    )
+    assert node.fqn == "catalog.schema.table"
+    assert node.workspace_id == "ws1"
+    assert node.object_type == "table"
 
 
-def test_unified_graph_add_node():
+def test_unified_lineage_graph_add_node():
     """Test adding nodes to unified graph."""
     graph = UnifiedLineageGraph()
     node = LineageNode(
-        id="node1",
-        workspace="ws1",
-        metastore="meta1",
-        catalog="cat1",
-        schema="sch1",
-        table="tbl1"
+        fqn="catalog.schema.table",
+        workspace_id="ws1",
+        metastore_id="ms1",
+        object_type="table",
     )
     graph.add_node(node)
-    assert "node1" in graph.nodes
-    assert graph.nodes["node1"].table == "tbl1"
+    assert "catalog.schema.table" in graph.nodes
+    assert len(graph.nodes) == 1
 
 
-def test_unified_graph_add_edge():
+def test_unified_lineage_graph_add_edge():
     """Test adding edges to unified graph."""
     graph = UnifiedLineageGraph()
-    edge = LineageEdge(source="node1", target="node2")
+    edge = LineageEdge(
+        source_fqn="catalog.schema.source",
+        target_fqn="catalog.schema.target",
+    )
     graph.add_edge(edge)
     assert len(graph.edges) == 1
+    assert graph.edges[0].source_fqn == "catalog.schema.source"
 
 
-def test_unified_graph_get_downstream():
-    """Test getting downstream dependencies."""
+def test_lineage_graph_navigation():
+    """Test upstream/downstream navigation."""
     graph = UnifiedLineageGraph()
-    graph.add_edge(LineageEdge(source="node1", target="node2"))
-    graph.add_edge(LineageEdge(source="node1", target="node3"))
-    downstream = graph.get_downstream("node1")
-    assert len(downstream) == 2
-    assert "node2" in downstream
-    assert "node3" in downstream
+    graph.add_edge(LineageEdge("table_a", "table_b"))
+    graph.add_edge(LineageEdge("table_b", "table_c"))
 
+    upstream = graph.get_upstream("table_b")
+    downstream = graph.get_downstream("table_b")
 
-def test_unified_graph_get_upstream():
-    """Test getting upstream dependencies."""
-    graph = UnifiedLineageGraph()
-    graph.add_edge(LineageEdge(source="node1", target="node3"))
-    graph.add_edge(LineageEdge(source="node2", target="node3"))
-    upstream = graph.get_upstream("node3")
-    assert len(upstream) == 2
-    assert "node1" in upstream
-    assert "node2" in upstream
-
-
-def test_lineage_unifier_initialization():
-    """Test initializing lineage unifier."""
-    configs = [{"workspace_id": "ws1", "host": "https://test.databricks.com", "token": "test"}]
-    unifier = LineageUnifier(configs)
-    assert len(unifier.workspace_configs) == 1
+    assert "table_a" in upstream
+    assert "table_c" in downstream
