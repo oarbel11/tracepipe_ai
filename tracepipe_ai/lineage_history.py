@@ -6,82 +6,76 @@ from pathlib import Path
 
 
 class LineageHistoryStorage:
-    """Persistent storage for historical lineage metadata beyond UC's 1-year window."""
+    """Persistent storage for historical lineage beyond Unity Catalog's 1-year limit."""
 
-    def __init__(self, db_path: str = "lineage_history.db"):
+    def __init__(self, db_path: str = "lineage_history.duckdb"):
         self.db_path = db_path
         self._init_db()
 
     def _init_db(self):
-        """Initialize DuckDB database with lineage history schema."""
+        """Initialize DuckDB database with lineage schema."""
         conn = duckdb.connect(self.db_path)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS lineage_history (
+            CREATE TABLE IF NOT EXISTS lineage_snapshots (
                 id INTEGER PRIMARY KEY,
-                asset_name VARCHAR,
-                asset_type VARCHAR,
-                upstream_assets VARCHAR,
-                downstream_assets VARCHAR,
-                metadata VARCHAR,
-                captured_at TIMESTAMP,
-                source_system VARCHAR
+                snapshot_date TIMESTAMP,
+                source_table VARCHAR,
+                target_table VARCHAR,
+                lineage_type VARCHAR,
+                metadata JSON
             )
         """)
         conn.close()
 
-    def store_lineage(self, asset_name: str, asset_type: str,
-                     upstream: List[str], downstream: List[str],
-                     metadata: Optional[Dict[str, Any]] = None,
-                     source_system: str = "unity_catalog"):
-        """Store lineage snapshot."""
+    def store_snapshot(self, lineage_data: List[Dict[str, Any]]) -> None:
+        """Store a lineage snapshot with timestamp."""
         conn = duckdb.connect(self.db_path)
-        conn.execute("""
-            INSERT INTO lineage_history
-            (asset_name, asset_type, upstream_assets, downstream_assets,
-             metadata, captured_at, source_system)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, [
-            asset_name, asset_type,
-            json.dumps(upstream), json.dumps(downstream),
-            json.dumps(metadata or {}),
-            datetime.now(), source_system
-        ])
+        snapshot_date = datetime.now()
+        for record in lineage_data:
+            conn.execute("""
+                INSERT INTO lineage_snapshots 
+                (snapshot_date, source_table, target_table, lineage_type, metadata)
+                VALUES (?, ?, ?, ?, ?)
+            """, [
+                snapshot_date,
+                record.get("source_table"),
+                record.get("target_table"),
+                record.get("lineage_type", "table"),
+                json.dumps(record.get("metadata", {}))
+            ])
         conn.close()
 
-    def get_lineage_history(self, asset_name: str,
-                           start_date: Optional[datetime] = None,
-                           end_date: Optional[datetime] = None) -> List[Dict]:
-        """Retrieve historical lineage for an asset."""
+    def query_historical_lineage(
+        self, table_name: str, start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Query historical lineage for a table within date range."""
         conn = duckdb.connect(self.db_path)
-        query = "SELECT * FROM lineage_history WHERE asset_name = ?"
-        params = [asset_name]
-
+        query = """
+            SELECT * FROM lineage_snapshots
+            WHERE source_table = ? OR target_table = ?
+        """
+        params = [table_name, table_name]
         if start_date:
-            query += " AND captured_at >= ?"
+            query += " AND snapshot_date >= ?"
             params.append(start_date)
         if end_date:
-            query += " AND captured_at <= ?"
+            query += " AND snapshot_date <= ?"
             params.append(end_date)
-
-        query += " ORDER BY captured_at DESC"
+        query += " ORDER BY snapshot_date DESC"
         result = conn.execute(query, params).fetchall()
-        columns = [desc[0] for desc in conn.description]
         conn.close()
+        return [{
+            "id": r[0], "snapshot_date": str(r[1]), "source_table": r[2],
+            "target_table": r[3], "lineage_type": r[4],
+            "metadata": json.loads(r[5]) if r[5] else {}
+        } for r in result]
 
-        return [dict(zip(columns, row)) for row in result]
-
-    def time_travel(self, asset_name: str, as_of: datetime) -> Optional[Dict]:
-        """Get lineage state at a specific point in time."""
+    def get_snapshot_dates(self) -> List[str]:
+        """Get all available snapshot dates."""
         conn = duckdb.connect(self.db_path)
-        result = conn.execute("""
-            SELECT * FROM lineage_history
-            WHERE asset_name = ? AND captured_at <= ?
-            ORDER BY captured_at DESC LIMIT 1
-        """, [asset_name, as_of]).fetchone()
+        result = conn.execute(
+            "SELECT DISTINCT snapshot_date FROM lineage_snapshots ORDER BY snapshot_date DESC"
+        ).fetchall()
         conn.close()
-
-        if result:
-            columns = ['id', 'asset_name', 'asset_type', 'upstream_assets',
-                      'downstream_assets', 'metadata', 'captured_at', 'source_system']
-            return dict(zip(columns, result))
-        return None
+        return [str(r[0]) for r in result]
