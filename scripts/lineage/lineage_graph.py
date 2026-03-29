@@ -1,79 +1,68 @@
-import networkx as nx
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Set, Optional
 
+class LineageNode:
+    def __init__(self, node_id: str, node_type: str, platform: str, 
+                 metadata: Optional[Dict] = None):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.platform = platform
+        self.metadata = metadata or {}
 
 class LineageGraphBuilder:
     def __init__(self):
-        self.graph = nx.DiGraph()
-        self.node_metadata = {}
+        self.nodes: Dict[str, LineageNode] = {}
+        self.edges: List[tuple] = []
 
-    def add_table_node(self, node_id: str, platform: str, schema: str,
-                       table: str, metadata: Optional[Dict] = None):
-        full_name = f"{platform}.{schema}.{table}"
-        self.graph.add_node(node_id, type="table", name=full_name,
-                           platform=platform, schema=schema, table=table)
-        if metadata:
-            self.node_metadata[node_id] = metadata
+    def add_node(self, node_id: str, node_type: str, platform: str, 
+                 metadata: Optional[Dict] = None) -> None:
+        node = LineageNode(node_id, node_type, platform, metadata)
+        self.nodes[node_id] = node
 
-    def add_column_node(self, node_id: str, table_id: str, column: str,
-                        data_type: str, metadata: Optional[Dict] = None):
-        self.graph.add_node(node_id, type="column", column=column,
-                           data_type=data_type, parent=table_id)
-        self.graph.add_edge(table_id, node_id, relationship="contains")
-        if metadata:
-            self.node_metadata[node_id] = metadata
+    def add_edge(self, source_id: str, target_id: str, 
+                 edge_type: str = 'data_flow') -> None:
+        if source_id in self.nodes and target_id in self.nodes:
+            self.edges.append((source_id, target_id, edge_type))
 
-    def add_lineage_edge(self, source_id: str, target_id: str,
-                        transformation: Optional[str] = None):
-        attrs = {"relationship": "flows_to"}
-        if transformation:
-            attrs["transformation"] = transformation
-        self.graph.add_edge(source_id, target_id, **attrs)
+    def get_upstream(self, node_id: str) -> List[str]:
+        return [src for src, tgt, _ in self.edges if tgt == node_id]
 
-    def get_upstream(self, node_id: str, depth: int = -1) -> List[str]:
-        if node_id not in self.graph:
+    def get_downstream(self, node_id: str) -> List[str]:
+        return [tgt for src, tgt, _ in self.edges if src == node_id]
+
+    def get_all_paths(self, source_id: str, target_id: str) -> List[List[str]]:
+        if source_id not in self.nodes or target_id not in self.nodes:
             return []
-        if depth == -1:
-            return list(nx.ancestors(self.graph, node_id))
-        upstream = []
-        for i in range(depth):
-            predecessors = list(self.graph.predecessors(node_id))
-            upstream.extend(predecessors)
-            if not predecessors:
-                break
-        return list(set(upstream))
+        
+        paths = []
+        visited = set()
+        self._dfs_paths(source_id, target_id, [source_id], visited, paths)
+        return paths
 
-    def get_downstream(self, node_id: str, depth: int = -1) -> List[str]:
-        if node_id not in self.graph:
-            return []
-        if depth == -1:
-            return list(nx.descendants(self.graph, node_id))
-        downstream = []
-        for i in range(depth):
-            successors = list(self.graph.successors(node_id))
-            downstream.extend(successors)
-            if not successors:
-                break
-        return list(set(downstream))
+    def _dfs_paths(self, current: str, target: str, path: List[str], 
+                   visited: Set[str], paths: List[List[str]]) -> None:
+        if current == target:
+            paths.append(path.copy())
+            return
+        
+        visited.add(current)
+        for next_node in self.get_downstream(current):
+            if next_node not in visited:
+                path.append(next_node)
+                self._dfs_paths(next_node, target, path, visited, paths)
+                path.pop()
+        visited.remove(current)
 
-    def find_path(self, source_id: str, target_id: str) -> List[List[str]]:
-        try:
-            paths = nx.all_simple_paths(self.graph, source_id, target_id)
-            return [list(p) for p in paths]
-        except (nx.NodeNotFound, nx.NetworkXNoPath):
-            return []
-
-    def get_impact_analysis(self, node_id: str) -> Dict:
+    def get_lineage_summary(self) -> Dict:
         return {
-            "node": node_id,
-            "upstream_count": len(self.get_upstream(node_id)),
-            "downstream_count": len(self.get_downstream(node_id)),
-            "downstream_nodes": self.get_downstream(node_id)
+            'node_count': len(self.nodes),
+            'edge_count': len(self.edges),
+            'platforms': list(set(n.platform for n in self.nodes.values())),
+            'node_types': list(set(n.node_type for n in self.nodes.values()))
         }
 
     def export_graph(self) -> Dict:
         return {
-            "nodes": dict(self.graph.nodes(data=True)),
-            "edges": list(self.graph.edges(data=True)),
-            "metadata": self.node_metadata
+            'nodes': [{**vars(n)} for n in self.nodes.values()],
+            'edges': [{'source': s, 'target': t, 'type': e} 
+                      for s, t, e in self.edges]
         }

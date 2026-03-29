@@ -1,103 +1,74 @@
 import pytest
 from scripts.lineage import LineageGraphBuilder, ConnectorRegistry, LineageStitcher
 
+def test_lineage_graph_builder():
+    builder = LineageGraphBuilder()
+    builder.add_node('db1.table1', 'table', 'databricks')
+    builder.add_node('db1.table2', 'table', 'databricks')
+    builder.add_edge('db1.table1', 'db1.table2')
+    
+    assert len(builder.nodes) == 2
+    assert len(builder.edges) == 1
+    assert builder.get_downstream('db1.table1') == ['db1.table2']
+    assert builder.get_upstream('db1.table2') == ['db1.table1']
 
-class TestLineageGraphBuilder:
-    def test_add_table_node(self):
-        builder = LineageGraphBuilder()
-        builder.add_table_node("t1", "databricks", "sales", "orders")
-        assert "t1" in builder.graph.nodes
-        assert builder.graph.nodes["t1"]["type"] == "table"
+def test_connector_registry():
+    registry = ConnectorRegistry()
+    
+    def mock_connector(config):
+        return {'nodes': [], 'edges': []}
+    
+    registry.register_connector('test_connector', mock_connector)
+    assert 'test_connector' in registry.list_connectors()
+    assert registry.get_connector('test_connector') is not None
 
-    def test_add_lineage_edge(self):
-        builder = LineageGraphBuilder()
-        builder.add_table_node("t1", "databricks", "sales", "orders")
-        builder.add_table_node("t2", "databricks", "analytics", "orders_agg")
-        builder.add_lineage_edge("t1", "t2", "aggregation")
-        assert builder.graph.has_edge("t1", "t2")
-
-    def test_get_upstream(self):
-        builder = LineageGraphBuilder()
-        builder.add_table_node("t1", "postgres", "raw", "users")
-        builder.add_table_node("t2", "databricks", "bronze", "users")
-        builder.add_table_node("t3", "databricks", "silver", "users")
-        builder.add_lineage_edge("t1", "t2")
-        builder.add_lineage_edge("t2", "t3")
-        upstream = builder.get_upstream("t3")
-        assert "t1" in upstream
-        assert "t2" in upstream
-
-    def test_get_downstream(self):
-        builder = LineageGraphBuilder()
-        builder.add_table_node("t1", "postgres", "raw", "users")
-        builder.add_table_node("t2", "databricks", "bronze", "users")
-        builder.add_lineage_edge("t1", "t2")
-        downstream = builder.get_downstream("t1")
-        assert "t2" in downstream
-
-    def test_impact_analysis(self):
-        builder = LineageGraphBuilder()
-        builder.add_table_node("t1", "databricks", "sales", "orders")
-        builder.add_table_node("t2", "databricks", "analytics", "orders_agg")
-        builder.add_lineage_edge("t1", "t2")
-        impact = builder.get_impact_analysis("t1")
-        assert impact["downstream_count"] == 1
-        assert "t2" in impact["downstream_nodes"]
-
-
-class TestConnectorRegistry:
-    def test_builtin_connectors(self):
-        registry = ConnectorRegistry()
-        assert "postgres" in registry.list_platforms()
-        assert "tableau" in registry.list_platforms()
-
-    def test_get_connector(self):
-        registry = ConnectorRegistry()
-        connector = registry.get_connector("postgres")
-        assert connector is not None
-
-    def test_postgres_extract_lineage(self):
-        registry = ConnectorRegistry()
-        connector = registry.get_connector("postgres")
-        metadata = {
-            "tables": [{"name": "users", "schema": "public"}],
-            "dependencies": []
+def test_lineage_stitcher():
+    builder = LineageGraphBuilder()
+    registry = ConnectorRegistry()
+    
+    def unity_catalog_connector(config):
+        return {
+            'nodes': [
+                {'id': 'uc.catalog.table1', 'type': 'table'},
+                {'id': 'uc.catalog.table2', 'type': 'table'}
+            ],
+            'edges': [{'source': 'uc.catalog.table1', 'target': 'uc.catalog.table2'}]
         }
-        result = connector.extract_lineage(metadata)
-        assert len(result["tables"]) == 1
-        assert result["tables"][0]["table"] == "users"
+    
+    registry.register_connector('unity_catalog', unity_catalog_connector)
+    stitcher = LineageStitcher(builder, registry)
+    
+    source_configs = [{'connector': 'unity_catalog', 'config': {}}]
+    summary = stitcher.stitch_lineage(source_configs)
+    
+    assert summary['node_count'] == 2
+    assert summary['edge_count'] == 1
+    assert 'unity_catalog' in summary['platforms']
 
-
-class TestLineageStitcher:
-    def test_stitch_unity_catalog(self):
-        registry = ConnectorRegistry()
-        stitcher = LineageStitcher(registry)
-        uc_lineage = {
-            "tables": [{
-                "catalog": "main",
-                "schema": "sales",
-                "table": "orders",
-                "columns": [{"name": "id", "type": "int"}]
-            }],
-            "lineage": []
+def test_cross_platform_lineage():
+    builder = LineageGraphBuilder()
+    registry = ConnectorRegistry()
+    
+    def db_connector(config):
+        return {'nodes': [{'id': 'mysql.db.users', 'type': 'table'}], 'edges': []}
+    
+    def uc_connector(config):
+        return {
+            'nodes': [{'id': 'uc.raw.users', 'type': 'table'}],
+            'edges': [{'source': 'mysql.db.users', 'target': 'uc.raw.users'}]
         }
-        stitcher.stitch_unity_catalog(uc_lineage)
-        assert len(stitcher.graph_builder.graph.nodes) > 0
-
-    def test_link_cross_platform(self):
-        registry = ConnectorRegistry()
-        stitcher = LineageStitcher(registry)
-        stitcher.graph_builder.add_table_node("t1", "postgres", "public", "users")
-        stitcher.graph_builder.add_table_node("t2", "databricks", "bronze", "users")
-        stitcher.link_cross_platform("t1", "t2", "etl")
-        assert stitcher.graph_builder.graph.has_edge("t1", "t2")
-
-    def test_get_end_to_end_lineage(self):
-        registry = ConnectorRegistry()
-        stitcher = LineageStitcher(registry)
-        stitcher.graph_builder.add_table_node("t1", "postgres", "public", "users")
-        stitcher.graph_builder.add_table_node("t2", "databricks", "bronze", "users")
-        stitcher.graph_builder.add_lineage_edge("t1", "t2")
-        lineage = stitcher.get_end_to_end_lineage("t2")
-        assert "postgres" in lineage["platforms_involved"]
-        assert "databricks" in lineage["platforms_involved"]
+    
+    registry.register_connector('mysql', db_connector)
+    registry.register_connector('unity_catalog', uc_connector)
+    stitcher = LineageStitcher(builder, registry)
+    
+    configs = [
+        {'connector': 'mysql', 'config': {}},
+        {'connector': 'unity_catalog', 'config': {}}
+    ]
+    stitcher.stitch_lineage(configs)
+    platform_summary = stitcher.get_platform_summary()
+    
+    assert len(platform_summary) == 2
+    assert 'mysql' in platform_summary
+    assert 'unity_catalog' in platform_summary
