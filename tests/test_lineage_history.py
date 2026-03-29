@@ -1,82 +1,78 @@
+"""Tests for Historical Lineage & Time Travel feature."""
+
 import pytest
-import json
-import tempfile
-import os
 from datetime import datetime, timedelta
+import json
+
 from tracepipe_ai.lineage_history import LineageHistoryStorage
 
 
 @pytest.fixture
-def temp_db():
-    with tempfile.NamedTemporaryFile(suffix='.duckdb', delete=False) as f:
-        db_path = f.name
-    yield db_path
-    if os.path.exists(db_path):
-        os.unlink(db_path)
+def storage():
+    """Create in-memory storage for testing."""
+    store = LineageHistoryStorage(":memory:")
+    yield store
+    store.close()
 
 
-@pytest.fixture
-def sample_lineage():
-    return [
-        {
-            'source_table': 'catalog.schema.source_table',
-            'target_table': 'catalog.schema.target_table',
-            'source_type': 'TABLE',
-            'target_type': 'TABLE',
-            'metadata': {'operation': 'INSERT', 'timestamp': '2024-01-01'}
-        },
-        {
-            'source_table': 'catalog.schema.another_source',
-            'target_table': 'catalog.schema.target_table',
-            'source_type': 'TABLE',
-            'target_type': 'TABLE',
-            'metadata': {'operation': 'MERGE', 'timestamp': '2024-01-02'}
-        }
-    ]
+def test_store_and_retrieve_lineage(storage):
+    """Test storing and retrieving lineage snapshots."""
+    asset_id = "catalog.schema.table1"
+    lineage_data = {
+        "upstream": ["catalog.schema.source1"],
+        "downstream": ["catalog.schema.target1"]
+    }
+    metadata = {"user": "test_user", "operation": "CREATE"}
+
+    storage.store_lineage(asset_id, "table", lineage_data, metadata)
+
+    history = storage.get_lineage_history(asset_id)
+    assert len(history) == 1
+    assert history[0]["asset_id"] == asset_id
+    assert history[0]["lineage_data"] == lineage_data
+    assert history[0]["metadata"] == metadata
 
 
-def test_storage_initialization(temp_db):
-    storage = LineageHistoryStorage(temp_db)
-    assert os.path.exists(temp_db)
+def test_time_travel_query(storage):
+    """Test retrieving lineage at specific point in time."""
+    asset_id = "catalog.schema.table2"
+    now = datetime.utcnow()
+
+    lineage_v1 = {"upstream": ["source1"], "downstream": []}
+    storage.store_lineage(asset_id, "table", lineage_v1)
+
+    future = now + timedelta(seconds=2)
+    lineage_v2 = {"upstream": ["source1", "source2"], "downstream": []}
+    storage.store_lineage(asset_id, "table", lineage_v2)
+
+    past_lineage = storage.get_lineage_at_time(asset_id, now + timedelta(seconds=1))
+    assert past_lineage == lineage_v1
+
+    current_lineage = storage.get_lineage_at_time(asset_id, future + timedelta(seconds=1))
+    assert current_lineage == lineage_v2
 
 
-def test_store_lineage(temp_db, sample_lineage):
-    storage = LineageHistoryStorage(temp_db)
-    snapshot_id = storage.store_lineage(sample_lineage)
-    assert snapshot_id is not None
-    assert isinstance(snapshot_id, str)
+def test_lineage_history_time_range(storage):
+    """Test filtering lineage history by time range."""
+    asset_id = "catalog.schema.table3"
+    base_time = datetime.utcnow()
+
+    for i in range(5):
+        lineage = {"upstream": [f"source{i}"], "downstream": []}
+        storage.store_lineage(asset_id, "table", lineage)
+
+    all_history = storage.get_lineage_history(asset_id)
+    assert len(all_history) == 5
+
+    start_time = base_time + timedelta(seconds=2)
+    filtered = storage.get_lineage_history(asset_id, start_time=start_time)
+    assert len(filtered) >= 1
 
 
-def test_query_all_lineage(temp_db, sample_lineage):
-    storage = LineageHistoryStorage(temp_db)
-    storage.store_lineage(sample_lineage)
-    results = storage.query_lineage()
-    assert len(results) == 2
-    assert results[0]['source_table'] == 'catalog.schema.source_table'
+def test_nonexistent_asset(storage):
+    """Test querying nonexistent asset returns None."""
+    result = storage.get_lineage_at_time("nonexistent", datetime.utcnow())
+    assert result is None
 
-
-def test_query_by_table_name(temp_db, sample_lineage):
-    storage = LineageHistoryStorage(temp_db)
-    storage.store_lineage(sample_lineage)
-    results = storage.query_lineage(table_name='catalog.schema.target_table')
-    assert len(results) == 2
-
-
-def test_query_by_date_range(temp_db, sample_lineage):
-    storage = LineageHistoryStorage(temp_db)
-    storage.store_lineage(sample_lineage)
-    
-    yesterday = (datetime.now() - timedelta(days=1)).isoformat()
-    tomorrow = (datetime.now() + timedelta(days=1)).isoformat()
-    
-    results = storage.query_lineage(start_date=yesterday, end_date=tomorrow)
-    assert len(results) == 2
-
-
-def test_time_travel_query(temp_db, sample_lineage):
-    storage = LineageHistoryStorage(temp_db)
-    snapshot1 = storage.store_lineage(sample_lineage[:1])
-    snapshot2 = storage.store_lineage(sample_lineage[1:])
-    
-    all_results = storage.query_lineage()
-    assert len(all_results) == 2
+    history = storage.get_lineage_history("nonexistent")
+    assert history == []
