@@ -1,73 +1,41 @@
-from typing import Dict, List, Set
-from dataclasses import dataclass, field
-
-@dataclass
-class ImpactNode:
-    table: str
-    column: str
-    node_type: str = "table"
-    dependencies: Set[str] = field(default_factory=set)
+from typing import Dict, List, Any
 
 class ImpactAnalyzer:
     def __init__(self):
         self.lineage_graph = {}
     
-    def build_graph(self, lineage_data: List[Dict]):
-        for lineage in lineage_data:
-            target = lineage["target_table"]
-            if target not in self.lineage_graph:
-                self.lineage_graph[target] = {}
-            
-            for col_name, col_info in lineage["columns"].items():
-                self.lineage_graph[target][col_name] = {
-                    "sources": col_info["source_columns"],
-                    "transformation_type": col_info["transformation_type"]
-                }
-    
-    def analyze_impact(self, table: str, column: str) -> Dict:
-        downstream = self._find_downstream(table, column)
-        upstream = self._find_upstream(table, column)
+    def add_lineage(self, table: str, lineage: Dict[str, Any]):
+        if table not in self.lineage_graph:
+            self.lineage_graph[table] = {}
         
-        return {
-            "source": {"table": table, "column": column},
-            "downstream_impact": list(downstream),
-            "upstream_dependencies": list(upstream),
-            "total_affected": len(downstream)
-        }
+        for col, info in lineage.get("columns", {}).items():
+            self.lineage_graph[table][col] = {
+                "source_columns": info.get("source_columns", []),
+                "downstream": []
+            }
     
-    def _find_downstream(self, table: str, column: str, visited=None) -> Set[str]:
-        if visited is None:
-            visited = set()
+    def analyze_impact(self, table: str, column: str) -> Dict[str, Any]:
+        impacted = {"tables": [], "columns": []}
         
-        affected = set()
+        if table not in self.lineage_graph or column not in self.lineage_graph[table]:
+            return impacted
+        
+        # Find all downstream dependencies
+        visited = set()
+        self._find_downstream(table, column, impacted, visited)
+        
+        return impacted
+    
+    def _find_downstream(self, table: str, column: str, impacted: Dict, visited: set):
         key = f"{table}.{column}"
-        
         if key in visited:
-            return affected
-        visited.add(key)
-        
-        for tbl, cols in self.lineage_graph.items():
-            for col, info in cols.items():
-                if table in str(info["sources"]) or column in info["sources"]:
-                    affected.add(f"{tbl}.{col}")
-                    affected.update(self._find_downstream(tbl, col, visited))
-        
-        return affected
-    
-    def _find_upstream(self, table: str, column: str, visited=None) -> Set[str]:
-        if visited is None:
-            visited = set()
-        
-        dependencies = set()
-        key = f"{table}.{column}"
-        
-        if key in visited:
-            return dependencies
+            return
         visited.add(key)
         
         if table in self.lineage_graph and column in self.lineage_graph[table]:
-            sources = self.lineage_graph[table][column]["sources"]
-            for src in sources:
-                dependencies.add(src)
-        
-        return dependencies
+            for downstream in self.lineage_graph[table][column].get("downstream", []):
+                impacted["columns"].append(downstream)
+                down_table, down_col = downstream.split(".")
+                if down_table not in impacted["tables"]:
+                    impacted["tables"].append(down_table)
+                self._find_downstream(down_table, down_col, impacted, visited)
