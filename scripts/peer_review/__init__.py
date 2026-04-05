@@ -1,18 +1,5 @@
-"""
-Senior Peer Review System
+"""Peer review module for Tracepipe AI."""
 
-Predicts technical failures from code changes.
-"""
+from .peer_review import PeerReviewAgent
 
-from .semantic_delta import SemanticDeltaExtractor
-from .blast_radius import ImpactAnalysisMapper
-from .technical_validator import TechnicalValidator
-from .peer_review import PeerReviewOrchestrator
-
-__all__ = [
-    'SemanticDeltaExtractor',
-    'BlastRadiusMapper',
-    'TechnicalValidator',
-    'PeerReviewOrchestrator',
-]
-
+__all__ = ['PeerReviewAgent']
