@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "tracepipe-ai"
+version = "0.1.0"
+description = "Tracepipe AI - Data Lineage Platform"
+authors = ["Anurag <anurag@tracepipe.ai>"]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+databricks-sdk = "^0.20.0"
+fastapi = "^0.109.0"
+uvicorn = "^0.27.0"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+sqlalchemy = "^2.0.25"
+alembic = "^1.13.1"
+psycopg2-binary = "^2.9.9"
+python-dotenv = "^1.0.0"
+httpx = "^0.26.0"
+duckdb = "^0.10.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.4"
+pytest-asyncio = "^0.23.3"
+pytest-cov = "^4.1.0"
+black = "^24.1.1"
+ruff = "^0.1.14"
+mypy = "^1.8.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tracepipe_ai"]
+asyncio_mode = "auto"
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
