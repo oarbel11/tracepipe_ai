@@ -1,80 +1,76 @@
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
-import duckdb
 import json
-import os
+from datetime import datetime, timedelta
+import duckdb
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 
 class LineageArchive:
     def __init__(self, db_path: str = "lineage_archive.duckdb"):
         self.db_path = db_path
         self.conn = duckdb.connect(db_path)
-        self._initialize_schema()
+        self._init_schema()
 
-    def _initialize_schema(self):
+    def _init_schema(self):
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS lineage_events (
                 id VARCHAR PRIMARY KEY,
-                event_type VARCHAR,
-                source_table VARCHAR,
-                target_table VARCHAR,
-                timestamp TIMESTAMP,
+                event_time TIMESTAMP,
+                table_name VARCHAR,
+                upstream_tables VARCHAR,
+                downstream_tables VARCHAR,
+                operation_type VARCHAR,
+                user_name VARCHAR,
                 metadata VARCHAR,
-                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                archived_at TIMESTAMP
             )
         """)
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_timestamp
-            ON lineage_events(timestamp)
+            CREATE INDEX IF NOT EXISTS idx_event_time 
+            ON lineage_events(event_time)
         """)
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_source
-            ON lineage_events(source_table)
+            CREATE INDEX IF NOT EXISTS idx_table_name 
+            ON lineage_events(table_name)
         """)
+
+    def archive_lineage(self, lineage_data: Dict[str, Any]) -> str:
+        event_id = lineage_data.get("id", f"evt_{datetime.now().isoformat()}")
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_target
-            ON lineage_events(target_table)
-        """)
+            INSERT INTO lineage_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event_id,
+            lineage_data.get("event_time", datetime.now()),
+            lineage_data.get("table_name", ""),
+            json.dumps(lineage_data.get("upstream_tables", [])),
+            json.dumps(lineage_data.get("downstream_tables", [])),
+            lineage_data.get("operation_type", ""),
+            lineage_data.get("user_name", ""),
+            json.dumps(lineage_data.get("metadata", {})),
+            datetime.now()
+        ))
+        return event_id
 
-    def archive_lineage(self, events: List[Dict[str, Any]]) -> int:
-        archived = 0
-        for event in events:
-            self.conn.execute("""
-                INSERT OR REPLACE INTO lineage_events
-                (id, event_type, source_table, target_table, timestamp, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, [
-                event.get("id"),
-                event.get("event_type"),
-                event.get("source_table"),
-                event.get("target_table"),
-                event.get("timestamp"),
-                json.dumps(event.get("metadata", {}))
-            ])
-            archived += 1
-        return archived
-
-    def query_historical_lineage(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-        table_name: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        query = "SELECT * FROM lineage_events WHERE timestamp BETWEEN ? AND ?"
+    def query_lineage(self, start_date: datetime, end_date: datetime,
+                      table_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM lineage_events WHERE event_time >= ? AND event_time <= ?"
         params = [start_date, end_date]
         if table_name:
-            query += " AND (source_table = ? OR target_table = ?)"
-            params.extend([table_name, table_name])
+            query += " AND table_name = ?"
+            params.append(table_name)
+        query += " ORDER BY event_time DESC"
         result = self.conn.execute(query, params).fetchall()
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in result]
 
-    def get_statistics(self) -> Dict[str, Any]:
-        stats = self.conn.execute("""
-            SELECT COUNT(*) as total, MIN(timestamp) as oldest,
-            MAX(timestamp) as newest FROM lineage_events
-        """).fetchone()
-        return {"total": stats[0], "oldest": stats[1], "newest": stats[2]}
+    def get_table_history(self, table_name: str) -> List[Dict[str, Any]]:
+        result = self.conn.execute("""
+            SELECT * FROM lineage_events 
+            WHERE table_name = ? 
+            ORDER BY event_time DESC
+        """, [table_name]).fetchall()
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in result]
 
     def close(self):
         self.conn.close()

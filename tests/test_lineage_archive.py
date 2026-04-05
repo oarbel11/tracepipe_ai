@@ -1,78 +1,80 @@
 import pytest
-import os
-import tempfile
 from datetime import datetime, timedelta
+import tempfile
+import os
 from tracepipe_ai.lineage_archive import LineageArchive
-from tracepipe_ai.databricks_collector import DatabricksLineageCollector
 
 
 @pytest.fixture
-def temp_db():
-    with tempfile.NamedTemporaryFile(suffix=".duckdb", delete=False) as f:
+def archive():
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".duckdb") as f:
         db_path = f.name
-    yield db_path
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    arch = LineageArchive(db_path)
+    yield arch
+    arch.close()
+    os.unlink(db_path)
 
 
-def test_lineage_archive_init(temp_db):
-    archive = LineageArchive(db_path=temp_db)
-    assert archive is not None
-    stats = archive.get_statistics()
-    assert stats["total"] == 0
-    archive.close()
+def test_archive_lineage(archive):
+    lineage_data = {
+        "id": "test_event_1",
+        "event_time": datetime.now(),
+        "table_name": "catalog.schema.table1",
+        "upstream_tables": ["catalog.schema.source1"],
+        "downstream_tables": ["catalog.schema.target1"],
+        "operation_type": "INSERT",
+        "user_name": "test_user",
+        "metadata": {"job_id": "123"}
+    }
+    event_id = archive.archive_lineage(lineage_data)
+    assert event_id == "test_event_1"
 
 
-def test_archive_lineage_events(temp_db):
-    archive = LineageArchive(db_path=temp_db)
-    events = [
-        {
-            "id": "event1",
-            "event_type": "table_read",
-            "source_table": "catalog.schema.table1",
-            "target_table": "catalog.schema.table2",
-            "timestamp": datetime.now(),
-            "metadata": {"user": "test_user"}
-        }
-    ]
-    count = archive.archive_lineage(events)
-    assert count == 1
-    stats = archive.get_statistics()
-    assert stats["total"] == 1
-    archive.close()
-
-
-def test_query_historical_lineage(temp_db):
-    archive = LineageArchive(db_path=temp_db)
+def test_query_lineage(archive):
     now = datetime.now()
-    events = [
-        {
-            "id": "event1",
-            "event_type": "table_read",
-            "source_table": "catalog.schema.table1",
-            "target_table": "catalog.schema.table2",
-            "timestamp": now - timedelta(days=2),
-            "metadata": {}
-        },
-        {
-            "id": "event2",
-            "event_type": "table_write",
-            "source_table": "catalog.schema.table2",
-            "target_table": "catalog.schema.table3",
-            "timestamp": now - timedelta(days=1),
-            "metadata": {}
-        }
-    ]
-    archive.archive_lineage(events)
-    results = archive.query_historical_lineage(
-        start_date=now - timedelta(days=3),
-        end_date=now
-    )
-    assert len(results) == 2
-    archive.close()
+    lineage_data = {
+        "event_time": now,
+        "table_name": "catalog.schema.table1",
+        "operation_type": "INSERT",
+        "user_name": "test_user"
+    }
+    archive.archive_lineage(lineage_data)
+    start = now - timedelta(hours=1)
+    end = now + timedelta(hours=1)
+    results = archive.query_lineage(start, end)
+    assert len(results) == 1
+    assert results[0]["table_name"] == "catalog.schema.table1"
 
 
-def test_databricks_collector_init():
-    collector = DatabricksLineageCollector()
-    assert collector is not None
-    assert not collector.is_configured()
+def test_query_lineage_with_table_filter(archive):
+    now = datetime.now()
+    archive.archive_lineage({
+        "event_time": now,
+        "table_name": "catalog.schema.table1",
+        "operation_type": "INSERT",
+        "user_name": "user1"
+    })
+    archive.archive_lineage({
+        "event_time": now,
+        "table_name": "catalog.schema.table2",
+        "operation_type": "UPDATE",
+        "user_name": "user2"
+    })
+    start = now - timedelta(hours=1)
+    end = now + timedelta(hours=1)
+    results = archive.query_lineage(start, end, "catalog.schema.table1")
+    assert len(results) == 1
+    assert results[0]["table_name"] == "catalog.schema.table1"
+
+
+def test_get_table_history(archive):
+    table_name = "catalog.schema.table1"
+    archive.archive_lineage({
+        "event_time": datetime.now(),
+        "table_name": table_name,
+        "operation_type": "INSERT",
+        "user_name": "user1"
+    })
+    history = archive.get_table_history(table_name)
+    assert len(history) >= 1
+    assert history[0]["table_name"] == table_name
