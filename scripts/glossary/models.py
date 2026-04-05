@@ -2,55 +2,61 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 from datetime import datetime
 
-@dataclass
-class Tag:
-    name: str
-    category: str = 'general'
 
 @dataclass
-class Owner:
-    name: str
-    email: Optional[str] = None
+class Tag:
+    key: str
+    value: str
+
+
+@dataclass
+class Ownership:
+    owner: str
     team: Optional[str] = None
+
 
 @dataclass
 class Term:
     name: str
     definition: str
-    owner: str
-    tags: List[str] = field(default_factory=list)
+    catalog_path: str
+    ownership: Optional[Ownership] = None
+    tags: List[Tag] = field(default_factory=list)
+    pii_status: bool = False
     quality_score: Optional[float] = None
-    is_pii: bool = False
-    steward: Optional[str] = None
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
     def to_dict(self):
         return {
             'name': self.name,
             'definition': self.definition,
-            'owner': self.owner,
-            'tags': ','.join(self.tags),
+            'catalog_path': self.catalog_path,
+            'ownership': {
+                'owner': self.ownership.owner,
+                'team': self.ownership.team
+            } if self.ownership else None,
+            'tags': [{'key': t.key, 'value': t.value} for t in self.tags],
+            'pii_status': self.pii_status,
             'quality_score': self.quality_score,
-            'is_pii': self.is_pii,
-            'steward': self.steward,
             'created_at': self.created_at,
             'updated_at': self.updated_at
         }
-    
+
     @classmethod
     def from_dict(cls, data):
-        tags = data.get('tags', '')
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(',') if t.strip()]
+        ownership = None
+        if data.get('ownership'):
+            ownership = Ownership(**data['ownership'])
+        tags = [Tag(**t) for t in data.get('tags', [])]
         return cls(
             name=data['name'],
             definition=data['definition'],
-            owner=data['owner'],
+            catalog_path=data['catalog_path'],
+            ownership=ownership,
             tags=tags,
+            pii_status=data.get('pii_status', False),
             quality_score=data.get('quality_score'),
-            is_pii=bool(data.get('is_pii', False)),
-            steward=data.get('steward'),
-            created_at=data.get('created_at', datetime.utcnow().isoformat()),
-            updated_at=data.get('updated_at', datetime.utcnow().isoformat())
+            created_at=data.get('created_at', datetime.now().isoformat()),
+            updated_at=data.get('updated_at', datetime.now().isoformat())
         )

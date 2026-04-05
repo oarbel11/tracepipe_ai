@@ -1,76 +1,78 @@
 import pytest
-import tempfile
 import os
-from scripts.glossary import Term, GlossaryManager, CatalogEnricher
+import tempfile
+from scripts.glossary import Term, Ownership, Tag, GlossaryManager, CatalogEnricher
+
 
 @pytest.fixture
-def temp_db():
-    fd, path = tempfile.mkstemp(suffix='.db')
+def temp_storage():
+    fd, path = tempfile.mkstemp(suffix='.json')
     os.close(fd)
     yield path
     if os.path.exists(path):
         os.unlink(path)
 
-@pytest.fixture
-def glossary_mgr(temp_db):
-    return GlossaryManager(db_path=temp_db)
 
-@pytest.fixture
-def enricher(glossary_mgr):
-    return CatalogEnricher(glossary_mgr)
+def test_term_creation():
+    term = Term(
+        name='customer_id',
+        definition='Unique identifier for customers',
+        catalog_path='catalog.schema.customer_id',
+        pii_status=True
+    )
+    assert term.name == 'customer_id'
+    assert term.pii_status is True
 
-def test_add_and_get_term(glossary_mgr):
+
+def test_glossary_manager_add_get(temp_storage):
+    manager = GlossaryManager(temp_storage)
+    term = Term(
+        name='order_date',
+        definition='Date when order was placed',
+        catalog_path='catalog.orders.order_date'
+    )
+    manager.add_term(term)
+    retrieved = manager.get_term('catalog.orders.order_date')
+    assert retrieved is not None
+    assert retrieved.name == 'order_date'
+
+
+def test_glossary_manager_update(temp_storage):
+    manager = GlossaryManager(temp_storage)
+    term = Term(
+        name='price',
+        definition='Product price',
+        catalog_path='catalog.products.price'
+    )
+    manager.add_term(term)
+    updated = manager.update_term('catalog.products.price', definition='Updated price')
+    assert updated.definition == 'Updated price'
+
+
+def test_glossary_manager_delete(temp_storage):
+    manager = GlossaryManager(temp_storage)
+    term = Term(
+        name='temp',
+        definition='Temporary field',
+        catalog_path='catalog.temp.field'
+    )
+    manager.add_term(term)
+    assert manager.delete_term('catalog.temp.field') is True
+    assert manager.get_term('catalog.temp.field') is None
+
+
+def test_catalog_enricher(temp_storage):
+    manager = GlossaryManager(temp_storage)
+    enricher = CatalogEnricher(manager)
     term = Term(
         name='customer_email',
-        definition='Email address of customer',
-        owner='data-team',
-        tags=['PII', 'contact'],
-        is_pii=True,
-        quality_score=98.5
+        definition='Customer email address',
+        catalog_path='catalog.users.email',
+        ownership=Ownership('data-team', 'engineering'),
+        pii_status=True
     )
-    glossary_mgr.add_term(term)
-    retrieved = glossary_mgr.get_term('customer_email')
-    assert retrieved is not None
-    assert retrieved.name == 'customer_email'
-    assert retrieved.is_pii is True
-    assert retrieved.quality_score == 98.5
-    assert 'PII' in retrieved.tags
-
-def test_list_terms_by_tag(glossary_mgr):
-    term1 = Term(name='t1', definition='d1', owner='o1', tags=['PII'])
-    term2 = Term(name='t2', definition='d2', owner='o2', tags=['critical'])
-    glossary_mgr.add_term(term1)
-    glossary_mgr.add_term(term2)
-    pii_terms = glossary_mgr.list_terms(tag='PII')
-    assert len(pii_terms) == 1
-    assert pii_terms[0].name == 't1'
-
-def test_enrich_column(enricher, glossary_mgr):
-    term = Term(name='user_id', definition='User identifier',
-                owner='eng', tags=['key'])
-    glossary_mgr.add_term(term)
-    enricher.enrich_column('catalog1', 'schema1', 'users', 'id', 'user_id')
-    retrieved = enricher.get_enrichment('catalog1', 'schema1', 'users', 'id')
-    assert retrieved is not None
-    assert retrieved.name == 'user_id'
-
-def test_find_pii_columns(enricher, glossary_mgr):
-    term = Term(name='email', definition='Email', owner='data',
-                tags=['PII'], is_pii=True)
-    glossary_mgr.add_term(term)
-    enricher.enrich_column('cat', 'sch', 'users', 'email', 'email')
-    pii_cols = enricher.find_pii_columns('cat', 'sch')
-    assert len(pii_cols) == 1
-    assert pii_cols[0]['column'] == 'email'
-
-def test_table_enrichments(enricher, glossary_mgr):
-    t1 = Term(name='id', definition='ID', owner='eng')
-    t2 = Term(name='name', definition='Name', owner='eng')
-    glossary_mgr.add_term(t1)
-    glossary_mgr.add_term(t2)
-    enricher.enrich_column('c', 's', 'tbl', 'id', 'id')
-    enricher.enrich_column('c', 's', 'tbl', 'name', 'name')
-    enrichments = enricher.get_table_enrichments('c', 's', 'tbl')
-    assert len(enrichments) == 2
-    assert 'id' in enrichments
-    assert 'name' in enrichments
+    manager.add_term(term)
+    asset = {'name': 'email', 'catalog_path': 'catalog.users.email'}
+    enriched = enricher.enrich_asset('catalog.users.email', asset)
+    assert 'business_metadata' in enriched
+    assert enriched['business_metadata']['pii_status'] is True
