@@ -484,6 +484,100 @@ def analyze_data_quality(table: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# IMPACT ANALYSIS TOOLS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@mcp.tool()
+def analyze_impact(table_name: str) -> str:
+    """
+    💥 Analyze the blast radius of changing a table.
+
+    Use this when the user wants to understand what will break or be affected
+    if they modify a specific table — BEFORE they make the change.
+
+    Traces all downstream tables that depend on the given table (recursively),
+    calculates how many hops away each one is, and returns a risk assessment.
+
+    Use this when the user says things like:
+    - "I want to change table_a, what will it affect?"
+    - "What's the impact of modifying silver.fact_jobs?"
+    - "If I update this table, what breaks downstream?"
+    - "Show me the blast radius of changing X"
+
+    Args:
+        table_name: The table you are planning to change (e.g., "silver.fact_jobs")
+
+    Returns:
+        A plain-English impact report showing all downstream tables,
+        their hop distance, and an overall risk level.
+
+    Example:
+        analyze_impact("silver.fact_jobs")
+        -> IMPACT ANALYSIS: silver.fact_jobs
+           Risk: YELLOW — 3 downstream tables affected
+           ...
+    """
+    try:
+        engine = get_engine()
+        visited: dict = {}  # table -> hop distance
+        queue = [(table_name, 0)]
+
+        while queue:
+            current, distance = queue.pop(0)
+            if current in visited:
+                continue
+            visited[current] = distance
+            try:
+                children = engine.get_downstream_tables(current)
+                for child in children:
+                    if child not in visited:
+                        queue.append((child, distance + 1))
+            except Exception:
+                pass
+
+        # Remove the source table itself
+        visited.pop(table_name, None)
+
+        if not visited:
+            return (
+                f"IMPACT ANALYSIS: {table_name}\n\n"
+                f"Risk: GREEN — No downstream tables depend on this table.\n"
+                f"Safe to change with no downstream impact."
+            )
+
+        total = len(visited)
+        if total >= 5:
+            risk = "RED"
+            risk_note = f"{total} downstream tables affected — high blast radius, review carefully."
+        elif total >= 2:
+            risk = "YELLOW"
+            risk_note = f"{total} downstream tables affected — proceed with caution."
+        else:
+            risk = "YELLOW"
+            risk_note = f"{total} downstream table affected — minor impact."
+
+        lines = [
+            f"IMPACT ANALYSIS: {table_name}",
+            f"",
+            f"Risk: {risk} — {risk_note}",
+            f"",
+            f"Downstream tables that will be affected:",
+        ]
+
+        for table, hops in sorted(visited.items(), key=lambda x: x[1]):
+            hop_label = f"hop {hops}" if hops > 1 else "direct dependency"
+            lines.append(f"  - {table}  ({hop_label})")
+
+        lines.append("")
+        lines.append(f"Total impacted: {total} table(s)")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Impact analysis error: {e}"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PEER REVIEW TOOLS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -610,6 +704,9 @@ if __name__ == "__main__":
     print("     • detect_duplicates  - Find duplicate rows")
     print("     • validate_business_rules - Check business logic")
     print("     • analyze_data_quality - Comprehensive quality analysis")
+    print()
+    print("   Impact Analysis:")
+    print("     • analyze_impact     - Blast radius of changing a table (chat-friendly)")
     print()
     print("   Peer Review:")
     print("     • peer_review_setup  - Build business context (run once when installing MCP)")
