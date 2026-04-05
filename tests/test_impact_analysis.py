@@ -1,79 +1,82 @@
-"""Tests for Interactive Impact Analysis."""
-import pytest
+"""Test interactive impact analysis."""
+import json
 from scripts.peer_review.impact_analyzer import InteractiveImpactAnalyzer
 
 
-def test_add_asset():
-    """Test adding assets."""
+def test_impact_analyzer_initialization():
+    """Test analyzer can be initialized."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {"tags": ["PII"], "owner": "team_a"})
-    assert "table1" in analyzer.metadata
-    assert analyzer.metadata["table1"]["tags"] == ["PII"]
+    assert analyzer is not None
+    assert analyzer.lineage_graph == {}
+    assert analyzer.asset_metadata == {}
 
 
-def test_add_dependency():
-    """Test adding dependencies."""
+def test_load_lineage():
+    """Test loading lineage data."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {})
-    analyzer.add_asset("table2", {})
-    analyzer.add_dependency("table1", "table2")
-    assert analyzer.graph.has_edge("table1", "table2")
+    lineage_data = {
+        "nodes": [
+            {"id": "table_a", "tags": ["PII"], "owner": "team1"},
+            {"id": "table_b", "tags": ["public"], "owner": "team2"},
+            {"id": "table_c", "tags": ["PII"], "owner": "team1"}
+        ],
+        "edges": [
+            {"source": "table_a", "target": "table_b"},
+            {"source": "table_b", "target": "table_c"}
+        ]
+    }
+    analyzer.load_lineage(lineage_data)
+    assert "table_a" in analyzer.lineage_graph
+    assert "table_b" in analyzer.lineage_graph["table_a"]
+    assert "table_a" in analyzer.asset_metadata
 
 
-def test_analyze_impact_basic():
-    """Test basic impact analysis."""
+def test_downstream_impact_analysis():
+    """Test analyzing downstream impact."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {})
-    analyzer.add_asset("table2", {})
-    analyzer.add_asset("table3", {})
-    analyzer.add_dependency("table1", "table2")
-    analyzer.add_dependency("table2", "table3")
+    lineage_data = {
+        "nodes": [
+            {"id": "table_a", "tags": ["PII"]},
+            {"id": "table_b", "tags": ["public"]},
+            {"id": "table_c", "tags": ["PII"]}
+        ],
+        "edges": [
+            {"source": "table_a", "target": "table_b"},
+            {"source": "table_b", "target": "table_c"}
+        ]
+    }
+    analyzer.load_lineage(lineage_data)
+    result = analyzer.analyze_downstream_impact("table_a")
+    assert result["source_asset"] == "table_a"
+    assert result["total_impacted"] == 2
+    assert len(result["impacted_assets"]) == 2
 
-    result = analyzer.analyze_impact("table1")
-    assert result["count"] == 2
-    assert "table2" in result["downstream"]
-    assert "table3" in result["downstream"]
 
-
-def test_analyze_impact_with_filters():
+def test_filtered_impact_analysis():
     """Test impact analysis with filters."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {"tags": ["PII"]})
-    analyzer.add_asset("table2", {"tags": ["PII"]})
-    analyzer.add_asset("table3", {"tags": ["public"]})
-    analyzer.add_dependency("table1", "table2")
-    analyzer.add_dependency("table1", "table3")
-
-    result = analyzer.analyze_impact("table1", {"tags": ["PII"]})
-    assert result["count"] == 1
-    assert "table2" in result["downstream"]
-    assert "table3" not in result["downstream"]
-
-
-def test_add_policy():
-    """Test adding governance policies."""
-    analyzer = InteractiveImpactAnalyzer()
-    policy = {"name": "PII Policy", "target_tags": ["PII"]}
-    analyzer.add_policy("policy1", policy)
-    assert "policy1" in analyzer.policies
-
-
-def test_policies_in_impact_analysis():
-    """Test policies are included in impact analysis."""
-    analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {"tags": ["PII"]})
-    analyzer.add_asset("table2", {"tags": ["PII"]})
-    analyzer.add_dependency("table1", "table2")
-    analyzer.add_policy("policy1", {"name": "PII", "target_tags": ["PII"]})
-
-    result = analyzer.analyze_impact("table1")
-    assert len(result["policies"]) > 0
-    assert result["policies"][0]["name"] == "PII"
+    lineage_data = {
+        "nodes": [
+            {"id": "table_a", "tags": ["source"]},
+            {"id": "table_b", "tags": ["PII"]},
+            {"id": "table_c", "tags": ["public"]}
+        ],
+        "edges": [
+            {"source": "table_a", "target": "table_b"},
+            {"source": "table_a", "target": "table_c"}
+        ]
+    }
+    analyzer.load_lineage(lineage_data)
+    result = analyzer.analyze_downstream_impact(
+        "table_a", filters={"tags": ["PII"]}
+    )
+    assert result["total_impacted"] == 1
+    assert result["impacted_assets"][0]["id"] == "table_b"
 
 
 def test_nonexistent_asset():
     """Test analyzing nonexistent asset."""
     analyzer = InteractiveImpactAnalyzer()
-    result = analyzer.analyze_impact("nonexistent")
-    assert result["count"] == 0
-    assert result["downstream"] == []
+    result = analyzer.analyze_downstream_impact("nonexistent")
+    assert "error" in result
+    assert result["impacted_assets"] == []

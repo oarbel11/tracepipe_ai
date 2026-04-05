@@ -1,82 +1,98 @@
-"""Interactive Impact Analysis for Tracepipe AI."""
+"""Interactive impact analysis for data lineage."""
 import json
-from typing import Dict, List, Set, Any, Optional
-import networkx as nx
+from typing import Dict, List, Set, Optional, Any
+from collections import deque
 
 
 class InteractiveImpactAnalyzer:
-    """Analyzes impact and blast radius of changes in data lineage."""
+    """Analyzes impact of changes across data lineage."""
 
     def __init__(self):
-        self.graph = nx.DiGraph()
-        self.metadata = {}
-        self.policies = {}
+        self.lineage_graph: Dict[str, List[str]] = {}
+        self.asset_metadata: Dict[str, Dict[str, Any]] = {}
+        self.governance_policies: Dict[str, List[Dict[str, Any]]] = {}
 
-    def add_asset(self, asset_id: str, metadata: Dict[str, Any]) -> None:
-        """Add an asset with metadata."""
-        self.graph.add_node(asset_id)
-        self.metadata[asset_id] = metadata
+    def load_lineage(self, lineage_data: Dict[str, Any]) -> None:
+        """Load lineage graph from data."""
+        self.lineage_graph = {}
+        edges = lineage_data.get("edges", [])
+        for edge in edges:
+            source = edge.get("source")
+            target = edge.get("target")
+            if source and target:
+                if source not in self.lineage_graph:
+                    self.lineage_graph[source] = []
+                self.lineage_graph[source].append(target)
 
-    def add_dependency(self, source: str, target: str) -> None:
-        """Add a dependency relationship."""
-        self.graph.add_edge(source, target)
+        nodes = lineage_data.get("nodes", [])
+        for node in nodes:
+            node_id = node.get("id")
+            if node_id:
+                self.asset_metadata[node_id] = node
 
-    def add_policy(self, policy_id: str, policy_data: Dict[str, Any]) -> None:
-        """Add a governance policy."""
-        self.policies[policy_id] = policy_data
+    def analyze_downstream_impact(self, asset_id: str,
+                                  filters: Optional[Dict] = None) -> Dict:
+        """Analyze downstream impact of an asset change."""
+        if asset_id not in self.asset_metadata:
+            return {"error": "Asset not found", "impacted_assets": []}
 
-    def analyze_impact(self, asset_id: str, filters: Optional[Dict] = None
-                       ) -> Dict[str, Any]:
-        """Analyze downstream impact of an asset."""
-        if asset_id not in self.graph:
-            return {"downstream": [], "count": 0, "policies": []}
-
-        downstream = list(nx.descendants(self.graph, asset_id))
-        filtered = self._apply_filters(downstream, filters or {})
-        applicable_policies = self._get_applicable_policies(asset_id, filtered)
+        impacted = self._get_downstream_assets(asset_id)
+        filtered = self._apply_filters(impacted, filters or {})
 
         return {
-            "downstream": filtered,
-            "count": len(filtered),
-            "policies": applicable_policies
+            "source_asset": asset_id,
+            "total_impacted": len(filtered),
+            "impacted_assets": filtered,
+            "policies": self._get_applicable_policies(filtered)
         }
 
-    def _apply_filters(self, assets: List[str], filters: Dict) -> List[str]:
+    def _get_downstream_assets(self, asset_id: str) -> List[str]:
+        """Get all downstream assets using BFS."""
+        visited: Set[str] = set()
+        queue = deque([asset_id])
+        downstream = []
+
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if current != asset_id:
+                downstream.append(current)
+
+            for neighbor in self.lineage_graph.get(current, []):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+
+        return downstream
+
+    def _apply_filters(self, assets: List[str],
+                       filters: Dict) -> List[Dict]:
         """Apply filters to asset list."""
         result = []
-        for asset in assets:
-            meta = self.metadata.get(asset, {})
-            if self._matches_filters(meta, filters):
-                result.append(asset)
+        for asset_id in assets:
+            metadata = self.asset_metadata.get(asset_id, {})
+            if self._matches_filters(metadata, filters):
+                result.append({"id": asset_id, **metadata})
         return result
 
     def _matches_filters(self, metadata: Dict, filters: Dict) -> bool:
-        """Check if metadata matches all filters."""
+        """Check if metadata matches filters."""
         for key, value in filters.items():
             if key == "tags" and isinstance(value, list):
                 asset_tags = metadata.get("tags", [])
                 if not any(tag in asset_tags for tag in value):
                     return False
-            elif metadata.get(key) != value:
+            elif key in metadata and metadata[key] != value:
                 return False
         return True
 
-    def _get_applicable_policies(self, asset_id: str, downstream: List[str]
-                                  ) -> List[Dict]:
-        """Get policies applicable to asset and downstream."""
-        result = []
-        all_assets = [asset_id] + downstream
-        for policy_id, policy in self.policies.items():
-            if self._policy_applies(policy, all_assets):
-                result.append({"id": policy_id, **policy})
-        return result
-
-    def _policy_applies(self, policy: Dict, assets: List[str]) -> bool:
-        """Check if policy applies to any asset."""
-        target_tags = policy.get("target_tags", [])
+    def _get_applicable_policies(self, assets: List[Dict]) -> List[Dict]:
+        """Get governance policies for assets."""
+        policies = []
         for asset in assets:
-            meta = self.metadata.get(asset, {})
-            asset_tags = meta.get("tags", [])
-            if any(tag in asset_tags for tag in target_tags):
-                return True
-        return False
+            asset_id = asset.get("id")
+            if asset_id in self.governance_policies:
+                policies.extend(self.governance_policies[asset_id])
+        return policies
