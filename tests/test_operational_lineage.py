@@ -1,72 +1,86 @@
+"""Tests for operational lineage tracking."""
+
 import pytest
-import networkx as nx
-from unittest.mock import Mock, patch, MagicMock
-from scripts.operational_lineage import OperationalLineageTracker
+import json
+from tracepipe_ai.operational_lineage import (
+    LineageCapture, LineageGraph, LineageVisualizer
+)
 
 
-@pytest.fixture
-def mock_config(tmp_path):
-    config_file = tmp_path / "config.yml"
-    config_file.write_text("""
-databricks:
-  server_hostname: "test.databricks.com"
-  http_path: "/sql/1.0/warehouses/test"
-  access_token: "test_token"
-""")
-    return str(config_file)
-
-
-@pytest.fixture
-def tracker(mock_config):
-    return OperationalLineageTracker(config_path=mock_config)
-
-
-def test_extract_tables_written(tracker):
-    query = "CREATE TABLE catalog.schema.table AS SELECT * FROM source"
-    tables = tracker._extract_tables_written(query, "CREATE_TABLE")
-    assert "catalog.schema.table" in tables
-
-
-def test_extract_tables_read(tracker):
-    query = "SELECT * FROM catalog.schema.source_table"
-    tables = tracker._extract_tables_read(query)
-    assert "catalog.schema.source_table" in tables
-
-
-def test_parse_query_lineage(tracker):
-    query_row = (
-        "INSERT INTO target SELECT * FROM source",
-        "user@example.com",
-        "INSERT",
-        "user@example.com",
-        "2024-01-01T12:00:00"
+def test_lineage_capture_notebook():
+    """Test capturing notebook lineage."""
+    capture = LineageCapture()
+    record = capture.capture_notebook_lineage(
+        '/notebooks/etl',
+        ['source.table1'],
+        ['target.table2']
     )
-    tracker._parse_query_lineage(query_row)
-    assert len(tracker.graph.nodes()) > 0
-    code_nodes = [n for n in tracker.graph.nodes() 
-                  if tracker.graph.nodes[n].get('node_type') == 'code']
-    assert len(code_nodes) == 1
+    assert record['type'] == 'notebook'
+    assert record['asset_id'] == '/notebooks/etl'
+    assert 'source.table1' in record['tables_read']
+    assert 'target.table2' in record['tables_written']
 
 
-def test_get_upstream_code(tracker):
-    tracker.graph.add_node("code1", node_type="code")
-    tracker.graph.add_node("table1", node_type="data")
-    tracker.graph.add_edge("code1", "table1", relationship="writes")
-    tracker.code_assets["code1"] = {"type": "query", "user": "test"}
-    
-    upstream = tracker.get_upstream_code("table1")
-    assert len(upstream) == 1
-    assert upstream[0]["user"] == "test"
+def test_lineage_capture_job():
+    """Test capturing job lineage."""
+    capture = LineageCapture()
+    record = capture.capture_job_lineage(
+        'job123', 'ETL Job',
+        ['source.table1'],
+        ['target.table2']
+    )
+    assert record['type'] == 'job'
+    assert record['asset_id'] == 'job123'
 
 
-def test_visualize_graph(tracker, tmp_path):
-    tracker.graph.add_node("code1", node_type="code")
-    tracker.graph.add_node("table1", node_type="data")
-    tracker.graph.add_edge("code1", "table1")
-    
-    output = tmp_path / "test.html"
-    tracker.visualize_graph(str(output))
-    
-    assert output.exists()
-    content = output.read_text()
-    assert "Operational Lineage" in content
+def test_lineage_graph_building():
+    """Test building lineage graph from records."""
+    capture = LineageCapture()
+    capture.capture_notebook_lineage(
+        '/notebooks/etl', ['source.t1'], ['target.t1']
+    )
+    capture.capture_job_lineage(
+        'job1', 'Job', ['target.t1'], ['target.t2']
+    )
+
+    graph = LineageGraph()
+    graph.build_from_records(capture.get_all_records())
+
+    assert len(graph.nodes) == 5
+    assert 'source.t1' in graph.nodes
+    assert '/notebooks/etl' in graph.nodes
+
+
+def test_lineage_graph_downstream():
+    """Test getting downstream nodes."""
+    graph = LineageGraph()
+    graph.add_node('notebook1', 'notebook')
+    graph.add_node('table1', 'table')
+    graph.add_edge('notebook1', 'table1', 'produces')
+
+    downstream = graph.get_downstream('notebook1')
+    assert 'table1' in downstream
+
+
+def test_lineage_visualizer_json():
+    """Test JSON export."""
+    graph = LineageGraph()
+    graph.add_node('notebook1', 'notebook')
+    graph.add_node('table1', 'table')
+    graph.add_edge('notebook1', 'table1', 'produces')
+
+    visualizer = LineageVisualizer(graph)
+    output = visualizer.to_json()
+    data = json.loads(output)
+
+    assert len(data['nodes']) == 2
+    assert len(data['edges']) == 1
+
+
+def test_lineage_visualizer_text():
+    """Test text visualization."""
+    graph = LineageGraph()
+    graph.add_node('notebook1', 'notebook')
+    visualizer = LineageVisualizer(graph)
+    text = visualizer.to_text()
+    assert 'Operational Lineage Graph' in text
