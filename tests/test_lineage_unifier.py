@@ -1,80 +1,75 @@
-import pytest
-import networkx as nx
+"""Tests for the lineage unification engine."""
 import json
-import tempfile
-import os
-from scripts.lineage_unifier import LineageUnifier
+import networkx as nx
+from pathlib import Path
+from connectors import ConnectorRegistry, LineageNode, LineageEdge
 from connectors.dbt_connector import DbtConnector
-from connectors import ConnectorRegistry, LineageNode
+from scripts.lineage_unifier import LineageUnifier
 
-@pytest.fixture
-def mock_dbt_manifest():
+
+def test_connector_registry():
+    """Test connector registry."""
+    assert "dbt" in ConnectorRegistry.list_connectors()
+    connector = ConnectorRegistry.get_connector("dbt", {"manifest_path": "fake.json"})
+    assert isinstance(connector, DbtConnector)
+
+
+def test_lineage_node():
+    """Test LineageNode creation."""
+    node = LineageNode("id1", "table1", "table", "dbt", {"schema": "public"})
+    node_dict = node.to_dict()
+    assert node_dict["id"] == "id1"
+    assert node_dict["name"] == "table1"
+    assert node_dict["system"] == "dbt"
+
+
+def test_lineage_edge():
+    """Test LineageEdge creation."""
+    edge = LineageEdge("node1", "node2", "transforms")
+    edge_dict = edge.to_dict()
+    assert edge_dict["source_id"] == "node1"
+    assert edge_dict["target_id"] == "node2"
+
+
+def test_dbt_connector_no_manifest(tmp_path):
+    """Test dbt connector when manifest doesn't exist."""
+    connector = DbtConnector({"manifest_path": str(tmp_path / "nonexistent.json")})
+    lineage = connector.extract_lineage()
+    assert lineage["nodes"] == []
+    assert lineage["edges"] == []
+
+
+def test_dbt_connector_with_manifest(tmp_path):
+    """Test dbt connector with a valid manifest."""
     manifest = {
         "nodes": {
-            "model.my_project.customers": {
+            "model.project.model1": {
+                "name": "model1",
                 "resource_type": "model",
-                "name": "customers",
-                "schema": "analytics",
-                "database": "prod",
-                "depends_on": {"nodes": ["source.my_project.raw.users"]}
-            }
-        },
-        "sources": {
-            "source.my_project.raw.users": {
-                "resource_type": "source",
-                "name": "users",
-                "schema": "raw",
-                "database": "prod",
-                "depends_on": {"nodes": []}
+                "schema": "public",
+                "database": "analytics",
+                "path": "models/model1.sql",
+                "depends_on": {"nodes": ["source.project.raw_data"]}
             }
         }
     }
-    
-    temp_dir = tempfile.mkdtemp()
-    manifest_path = os.path.join(temp_dir, 'manifest.json')
-    with open(manifest_path, 'w') as f:
+    manifest_path = tmp_path / "manifest.json"
+    with open(manifest_path, "w") as f:
         json.dump(manifest, f)
-    
-    yield manifest_path
-    os.remove(manifest_path)
-    os.rmdir(temp_dir)
 
-def test_dbt_connector_extraction(mock_dbt_manifest):
-    config = {'manifest_path': mock_dbt_manifest, 'project_name': 'my_project'}
-    connector = DbtConnector(config)
-    
-    assert connector.validate_config()
-    graph = connector.extract_lineage()
-    
-    assert len(graph.nodes()) == 2
-    assert len(graph.edges()) == 1
+    connector = DbtConnector({"manifest_path": str(manifest_path)})
+    lineage = connector.extract_lineage()
+    assert len(lineage["nodes"]) == 1
+    assert len(lineage["edges"]) == 1
 
-def test_lineage_unifier_integration(mock_dbt_manifest):
+
+def test_lineage_unifier():
+    """Test lineage unifier basic functionality."""
     unifier = LineageUnifier()
-    config = {'manifest_path': mock_dbt_manifest, 'project_name': 'my_project'}
-    
-    unifier.add_lineage_source('dbt', config)
-    
-    assert len(unifier.unified_graph.nodes()) == 2
-    assert len(unifier.unified_graph.edges()) == 1
-
-def test_cross_system_mapping():
-    unifier = LineageUnifier()
-    unifier.unified_graph.add_node('dbt://proj/model1', node_type='model', system='dbt', metadata={'name': 'customers'})
-    unifier.unified_graph.add_node('databricks://catalog/table1', node_type='table', system='databricks', metadata={'name': 'customers'})
-    
-    unifier.add_mapping_rule('dbt://', 'databricks://', 'dbt', 'databricks')
-    unifier.apply_cross_system_mappings()
-    
-    assert len(unifier.unified_graph.edges()) == 1
-
-def test_end_to_end_lineage(mock_dbt_manifest):
-    unifier = LineageUnifier()
-    config = {'manifest_path': mock_dbt_manifest, 'project_name': 'my_project'}
-    unifier.add_lineage_source('dbt', config)
-    
-    node_id = 'dbt://my_project/model.my_project.customers'
-    lineage = unifier.get_end_to_end_lineage(node_id, 'upstream')
-    
-    assert node_id in lineage.nodes()
-    assert len(lineage.nodes()) >= 1
+    databricks_lineage = {
+        "nodes": [{"id": "table1", "name": "table1", "type": "table"}],
+        "edges": [{"source_id": "table1", "target_id": "table2"}]
+    }
+    unifier.add_databricks_lineage(databricks_lineage)
+    unified = unifier.get_unified_lineage()
+    assert len(unified["nodes"]) >= 1

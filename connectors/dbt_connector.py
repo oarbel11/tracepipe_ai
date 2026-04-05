@@ -1,50 +1,56 @@
+"""dbt lineage connector implementation."""
 import json
-import os
 from pathlib import Path
-import networkx as nx
+from typing import Dict, Any, List
 from connectors import BaseLineageConnector, LineageNode, LineageEdge, ConnectorRegistry
 
+
 class DbtConnector(BaseLineageConnector):
-    def __init__(self, config):
+    """Connector for extracting lineage from dbt projects."""
+
+    def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.manifest_path = config.get('manifest_path', 'target/manifest.json')
-        self.project_name = config.get('project_name', 'dbt_project')
+        self.manifest_path = config.get("manifest_path", "target/manifest.json")
 
-    def validate_config(self) -> bool:
-        return os.path.exists(self.manifest_path)
+    def extract_lineage(self) -> Dict[str, Any]:
+        """Extract lineage from dbt manifest.json."""
+        nodes = []
+        edges = []
 
-    def extract_lineage(self) -> nx.DiGraph:
-        graph = nx.DiGraph()
-        
-        with open(self.manifest_path, 'r') as f:
+        manifest_file = Path(self.manifest_path)
+        if not manifest_file.exists():
+            return {"nodes": nodes, "edges": edges}
+
+        with open(manifest_file, "r") as f:
             manifest = json.load(f)
-        
-        nodes = manifest.get('nodes', {})
-        sources = manifest.get('sources', {})
-        
-        for node_id, node_data in {**nodes, **sources}.items():
-            node_type = node_data.get('resource_type', 'unknown')
-            unique_id = f"dbt://{self.project_name}/{node_id}"
-            
-            lineage_node = LineageNode(
-                identifier=unique_id,
-                node_type=node_type,
-                system='dbt',
+
+        dbt_nodes = manifest.get("nodes", {})
+        for node_id, node_data in dbt_nodes.items():
+            node = LineageNode(
+                id=f"dbt:{node_id}",
+                name=node_data.get("name", node_id),
+                type=node_data.get("resource_type", "model"),
+                system="dbt",
                 metadata={
-                    'name': node_data.get('name'),
-                    'schema': node_data.get('schema'),
-                    'database': node_data.get('database'),
-                    'description': node_data.get('description', '')
+                    "schema": node_data.get("schema"),
+                    "database": node_data.get("database"),
+                    "path": node_data.get("path")
                 }
             )
-            
-            graph.add_node(unique_id, **lineage_node.to_dict())
-            
-            for dep in node_data.get('depends_on', {}).get('nodes', []):
-                dep_id = f"dbt://{self.project_name}/{dep}"
-                edge = LineageEdge(source=dep_id, target=unique_id, edge_type='transforms')
-                graph.add_edge(dep_id, unique_id, edge_type=edge.edge_type, metadata=edge.metadata)
-        
-        return graph
+            nodes.append(node)
 
-ConnectorRegistry.register('dbt', DbtConnector)
+            for dep in node_data.get("depends_on", {}).get("nodes", []):
+                edge = LineageEdge(
+                    source_id=f"dbt:{dep}",
+                    target_id=f"dbt:{node_id}",
+                    edge_type="transforms"
+                )
+                edges.append(edge)
+
+        return {
+            "nodes": [n.to_dict() for n in nodes],
+            "edges": [e.to_dict() for e in edges]
+        }
+
+
+ConnectorRegistry.register("dbt", DbtConnector)

@@ -1,66 +1,61 @@
+"""Lineage unification engine to merge external and Databricks lineage."""
+import json
+from typing import Dict, List, Any
+from pathlib import Path
 import networkx as nx
-from typing import List, Dict, Any
 from connectors import ConnectorRegistry
 
+
 class LineageUnifier:
+    """Unifies lineage from multiple sources into a single graph."""
+
     def __init__(self):
-        self.unified_graph = nx.DiGraph()
-        self.mapping_rules = {}
+        self.graph = nx.DiGraph()
 
-    def add_lineage_source(self, connector_name: str, config: Dict[str, Any]):
+    def add_lineage_from_connector(self, connector_name: str, config: Dict[str, Any]):
+        """Add lineage from a specific connector."""
         connector = ConnectorRegistry.get_connector(connector_name, config)
-        
-        if not connector.validate_config():
-            raise ValueError(f"Invalid config for connector '{connector_name}'")
-        
-        lineage_graph = connector.extract_lineage()
-        self.unified_graph = nx.compose(self.unified_graph, lineage_graph)
+        lineage_data = connector.extract_lineage()
 
-    def add_mapping_rule(self, source_pattern: str, target_pattern: str, system_a: str, system_b: str):
-        rule_id = f"{system_a}:{system_b}"
-        if rule_id not in self.mapping_rules:
-            self.mapping_rules[rule_id] = []
-        self.mapping_rules[rule_id].append({
-            'source_pattern': source_pattern,
-            'target_pattern': target_pattern
-        })
+        for node in lineage_data.get("nodes", []):
+            self.graph.add_node(node["id"], **node)
 
-    def apply_cross_system_mappings(self):
-        for rule_id, rules in self.mapping_rules.items():
-            for rule in rules:
-                self._apply_mapping(rule['source_pattern'], rule['target_pattern'])
+        for edge in lineage_data.get("edges", []):
+            self.graph.add_edge(edge["source_id"], edge["target_id"], edge_type=edge["edge_type"])
 
-    def _apply_mapping(self, source_pattern: str, target_pattern: str):
-        matched_nodes = [n for n in self.unified_graph.nodes() if source_pattern in n]
-        target_nodes = [n for n in self.unified_graph.nodes() if target_pattern in n]
-        
-        for src in matched_nodes:
-            for tgt in target_nodes:
-                if self._nodes_match(src, tgt):
-                    self.unified_graph.add_edge(src, tgt, edge_type='cross_system_link')
+    def add_databricks_lineage(self, lineage_data: Dict[str, Any]):
+        """Add Databricks Unity Catalog lineage."""
+        for node in lineage_data.get("nodes", []):
+            node_id = f"databricks:{node['id']}"
+            self.graph.add_node(node_id, **node, system="databricks")
 
-    def _nodes_match(self, node_a: str, node_b: str) -> bool:
-        data_a = self.unified_graph.nodes[node_a].get('metadata', {})
-        data_b = self.unified_graph.nodes[node_b].get('metadata', {})
-        
-        name_a = data_a.get('name', '')
-        name_b = data_b.get('name', '')
-        
-        return name_a and name_b and name_a.lower() == name_b.lower()
+        for edge in lineage_data.get("edges", []):
+            source_id = f"databricks:{edge['source_id']}"
+            target_id = f"databricks:{edge['target_id']}"
+            self.graph.add_edge(source_id, target_id, edge_type=edge.get("edge_type", "depends_on"))
 
-    def get_end_to_end_lineage(self, node_id: str, direction: str = 'both') -> nx.DiGraph:
-        if node_id not in self.unified_graph:
-            return nx.DiGraph()
-        
-        if direction == 'upstream':
-            nodes = nx.ancestors(self.unified_graph, node_id)
-        elif direction == 'downstream':
-            nodes = nx.descendants(self.unified_graph, node_id)
-        else:
-            nodes = nx.ancestors(self.unified_graph, node_id) | nx.descendants(self.unified_graph, node_id)
-        
-        nodes.add(node_id)
-        return self.unified_graph.subgraph(nodes).copy()
+    def link_systems(self, mappings: List[Dict[str, str]]):
+        """Create edges between different systems based on mappings."""
+        for mapping in mappings:
+            source = mapping.get("source")
+            target = mapping.get("target")
+            if source and target and self.graph.has_node(source) and self.graph.has_node(target):
+                self.graph.add_edge(source, target, edge_type="cross_system")
 
-    def export_graph(self) -> Dict[str, Any]:
-        return nx.node_link_data(self.unified_graph)
+    def get_unified_lineage(self) -> Dict[str, Any]:
+        """Export unified lineage graph."""
+        nodes = [dict(id=n, **self.graph.nodes[n]) for n in self.graph.nodes()]
+        edges = [{"source_id": u, "target_id": v, **self.graph.edges[u, v]} for u, v in self.graph.edges()]
+        return {"nodes": nodes, "edges": edges}
+
+    def export_to_file(self, output_path: str):
+        """Export unified lineage to JSON file."""
+        unified = self.get_unified_lineage()
+        with open(output_path, "w") as f:
+            json.dump(unified, f, indent=2)
+
+    def get_downstream_impact(self, node_id: str) -> List[str]:
+        """Get all downstream nodes affected by a change."""
+        if not self.graph.has_node(node_id):
+            return []
+        return list(nx.descendants(self.graph, node_id))
