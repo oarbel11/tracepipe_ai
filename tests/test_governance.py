@@ -1,79 +1,66 @@
 import pytest
-from datetime import datetime, timedelta
-import networkx as nx
-from scripts.governance.policy_engine import GovernancePolicyEngine, PolicyViolation
-from scripts.governance.alert_propagator import AlertPropagator, ImpactAlert
-import tempfile
-import yaml
+from tracepipe_ai.governance import (
+    PolicyEngine, ViolationDetector, AlertPropagator
+)
 
 @pytest.fixture
-def test_policies():
-    policies = {
-        'policies': [
-            {'name': 'test_schema', 'type': 'schema_drift', 'severity': 'high', 'scope': ['*.gold.*']},
-            {'name': 'test_freshness', 'type': 'freshness', 'severity': 'critical', 'max_age_hours': 24, 'scope': ['*']},
-            {'name': 'test_pii', 'type': 'pii_detection', 'severity': 'critical', 'patterns': ['email', 'ssn'], 'scope': ['*']}
-        ]
-    }
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
-        yaml.dump(policies, f)
-        return f.name
+def policy_engine():
+    return PolicyEngine()
+
+@pytest.fixture
+def violation_detector():
+    return ViolationDetector()
 
 @pytest.fixture
 def lineage_graph():
-    g = nx.DiGraph()
-    g.add_node('bronze.raw', owner='data_eng')
-    g.add_node('silver.clean', owner='analytics')
-    g.add_node('gold.report', owner='bi_team')
-    g.add_edge('bronze.raw', 'silver.clean')
-    g.add_edge('silver.clean', 'gold.report')
-    return g
+    return {
+        'table_a': ['table_b', 'table_c'],
+        'table_b': ['table_d'],
+        'table_c': ['table_d']
+    }
 
-def test_policy_engine_schema_drift(test_policies):
-    engine = GovernancePolicyEngine(test_policies)
-    metadata = {'schema_changed': True, 'old_schema': 'a,b', 'new_schema': 'a,b,c'}
-    violations = engine.check_asset('companies_data.gold.customers', metadata)
-    assert len(violations) == 1
-    assert violations[0].policy_name == 'test_schema'
-    assert violations[0].severity == 'high'
+@pytest.fixture
+def alert_propagator(lineage_graph):
+    return AlertPropagator(lineage_graph)
 
-def test_policy_engine_freshness(test_policies):
-    engine = GovernancePolicyEngine(test_policies)
-    old_time = datetime.now() - timedelta(hours=48)
-    metadata = {'last_updated': old_time}
-    violations = engine.check_asset('companies_data.silver.orders', metadata)
-    assert len(violations) >= 1
-    assert any(v.policy_name == 'test_freshness' for v in violations)
+def test_create_policy(policy_engine):
+    policy = policy_engine.create_policy(
+        'p1', 'table_a', 'schema_change', {'strict': True})
+    assert policy.policy_id == 'p1'
+    assert policy.asset_id == 'table_a'
+    assert policy.enabled is True
 
-def test_policy_engine_pii(test_policies):
-    engine = GovernancePolicyEngine(test_policies)
-    metadata = {'columns': ['user_id', 'email_address', 'order_date']}
-    violations = engine.check_asset('companies_data.bronze.users', metadata)
-    assert len(violations) == 1
-    assert violations[0].policy_name == 'test_pii'
-    assert 'email_address' in violations[0].message
+def test_schema_change_detection(violation_detector, policy_engine):
+    policy = policy_engine.create_policy(
+        'p1', 'table_a', 'schema_change', {})
+    asset_data = {'current_schema': ['col1', 'col2'],
+                  'previous_schema': ['col1']}
+    violation = violation_detector.detect_violations(policy, asset_data)
+    assert violation is not None
+    assert violation.violation_type == 'schema_change'
 
-def test_alert_propagator(lineage_graph):
-    propagator = AlertPropagator(lineage_graph)
-    violation = PolicyViolation(
-        asset_id='bronze.raw',
-        policy_name='test_policy',
-        severity='critical',
-        message='Test violation',
-        detected_at=datetime.now(),
-        metadata={}
-    )
-    alerts = propagator.propagate_violations([violation])
-    assert len(alerts) == 3
-    assert alerts[0].asset == 'bronze.raw'
-    assert alerts[0].impact_distance == 0
-    downstream_assets = [a.asset for a in alerts if a.impact_distance > 0]
-    assert 'silver.clean' in downstream_assets
-    assert 'gold.report' in downstream_assets
+def test_freshness_detection(violation_detector, policy_engine):
+    policy = policy_engine.create_policy(
+        'p2', 'table_a', 'freshness', {'max_hours': 24})
+    asset_data = {'last_update_hours': 48}
+    violation = violation_detector.detect_violations(policy, asset_data)
+    assert violation is not None
+    assert violation.violation_type == 'freshness'
 
-def test_severity_degradation(lineage_graph):
-    propagator = AlertPropagator(lineage_graph)
-    assert propagator._propagate_severity('critical', 0) == 'critical'
-    assert propagator._propagate_severity('critical', 1) == 'high'
-    assert propagator._propagate_severity('critical', 2) == 'medium'
-    assert propagator._propagate_severity('high', 1) == 'medium'
+def test_pii_detection(violation_detector, policy_engine):
+    policy = policy_engine.create_policy(
+        'p3', 'table_a', 'pii_detection', {})
+    asset_data = {'data_sample': 'Email: test@example.com'}
+    violation = violation_detector.detect_violations(policy, asset_data)
+    assert violation is not None
+    assert 'email' in violation.details['detected']
+
+def test_downstream_propagation(alert_propagator, policy_engine):
+    from tracepipe_ai.governance.violation_detector import Violation
+    violation = Violation('p1', 'table_a', 'schema_change', {})
+    owners = {'table_a': ['owner1'], 'table_b': ['owner2'],
+              'table_c': ['owner3'], 'table_d': ['owner4']}
+    alerts = alert_propagator.propagate_alert(violation, owners)
+    assert len(alerts) == 4
+    assert alerts[0].impact_level == 'critical'
+    assert all(a.impact_level == 'warning' for a in alerts[1:])
