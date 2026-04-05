@@ -1,63 +1,73 @@
-import argparse
+#!/usr/bin/env python3
+"""CLI for Tracepipe AI operations."""
 import sys
-from datetime import datetime
 import json
-from scripts.lineage_archive import LineageArchiver
-from scripts.lineage_query import LineageQueryEngine
+from datetime import datetime, timedelta
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from tracepipe_ai.lineage_archive import LineageArchive
 
 
-def cmd_archive(args):
-    archiver = LineageArchiver(args.config)
-    print("Extracting lineage from Databricks...")
-    snapshot_id = archiver.archive_lineage()
-    print(f"Archived lineage snapshot: {snapshot_id}")
+def archive_lineage_cmd(args):
+    """Archive lineage data from input file or mock data."""
+    archive = LineageArchive()
+    
+    if len(args) > 0 and Path(args[0]).exists():
+        with open(args[0], 'r') as f:
+            data = json.load(f)
+    else:
+        data = [
+            {
+                'event_time': datetime.now().isoformat(),
+                'source_table': 'catalog.schema.source',
+                'target_table': 'catalog.schema.target',
+                'operation': 'INSERT',
+                'metadata': {'user': 'system', 'query_id': '123'}
+            }
+        ]
+    
+    count = archive.archive_lineage(data)
+    archive.close()
+    print(f"Archived {count} lineage events")
+    return 0
 
 
-def cmd_query(args):
-    engine = LineageQueryEngine(args.config)
-    if args.entity:
-        results = engine.query_entity_lineage(
-            args.entity, args.start_date, args.end_date
-        )
-        print(json.dumps(results, indent=2, default=str))
-    elif args.timeline:
-        results = engine.get_lineage_timeline(args.timeline)
-        print(json.dumps(results, indent=2, default=str))
-    elif args.snapshots:
-        results = engine.query_snapshots(args.start_date, args.end_date)
-        print(json.dumps(results, indent=2, default=str))
-
-
-def cmd_audit(args):
-    engine = LineageQueryEngine(args.config)
-    report = engine.audit_report(args.entity, args.months)
-    print(json.dumps(report, indent=2, default=str))
+def query_lineage_cmd(args):
+    """Query historical lineage data."""
+    archive = LineageArchive()
+    
+    end = datetime.now()
+    start = end - timedelta(days=365)
+    table = args[0] if len(args) > 0 else None
+    
+    results = archive.query_historical(
+        start.isoformat(), end.isoformat(), table
+    )
+    archive.close()
+    
+    print(json.dumps(results, indent=2, default=str))
+    return 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Tracepipe AI CLI")
-    parser.add_argument('--config', default='config/config.yml')
-    subparsers = parser.add_subparsers(dest='command', required=True)
+    """Main CLI entry point."""
+    if len(sys.argv) < 2:
+        print("Usage: cli.py [archive|query] [args...]")
+        return 1
     
-    archive_parser = subparsers.add_parser('archive', help='Archive lineage data')
-    archive_parser.set_defaults(func=cmd_archive)
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
     
-    query_parser = subparsers.add_parser('query', help='Query archived lineage')
-    query_parser.add_argument('--entity', help='Entity name to query')
-    query_parser.add_argument('--timeline', help='Get timeline for entity')
-    query_parser.add_argument('--snapshots', action='store_true', help='List snapshots')
-    query_parser.add_argument('--start-date', help='Start date filter')
-    query_parser.add_argument('--end-date', help='End date filter')
-    query_parser.set_defaults(func=cmd_query)
-    
-    audit_parser = subparsers.add_parser('audit', help='Generate audit report')
-    audit_parser.add_argument('entity', help='Entity to audit')
-    audit_parser.add_argument('--months', type=int, default=12, help='Months back')
-    audit_parser.set_defaults(func=cmd_audit)
-    
-    args = parser.parse_args()
-    args.func(args)
+    if cmd == 'archive':
+        return archive_lineage_cmd(args)
+    elif cmd == 'query':
+        return query_lineage_cmd(args)
+    else:
+        print(f"Unknown command: {cmd}")
+        return 1
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

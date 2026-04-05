@@ -1,83 +1,98 @@
-import pytest
-import os
+"""Tests for long-term lineage archiving."""
+import json
 import tempfile
-import yaml
-from datetime import datetime
-from scripts.lineage_archive import LineageArchiver
-from scripts.lineage_query import LineageQueryEngine
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from tracepipe_ai.lineage_archive import LineageArchive
 
 
-@pytest.fixture
-def test_config():
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
-        config = {
-            'lineage_archive_db': ':memory:',
-            'databricks': {
-                'server_hostname': 'test.databricks.com',
-                'http_path': '/sql/1.0/test',
-                'access_token': 'test_token'
+def test_archive_initialization():
+    """Test archive database initialization."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = f"{tmpdir}/test.duckdb"
+        archive = LineageArchive(db_path)
+        assert Path(db_path).exists()
+        archive.close()
+
+
+def test_archive_lineage_events():
+    """Test archiving lineage events."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        archive = LineageArchive(f"{tmpdir}/test.duckdb")
+        
+        events = [
+            {
+                'event_time': datetime.now(),
+                'source_table': 'catalog.schema.table1',
+                'target_table': 'catalog.schema.table2',
+                'operation': 'INSERT',
+                'metadata': {'user': 'test_user'}
+            },
+            {
+                'event_time': datetime.now() - timedelta(days=30),
+                'source_table': 'catalog.schema.table3',
+                'target_table': 'catalog.schema.table4',
+                'operation': 'UPDATE',
+                'metadata': {'query_id': 'q123'}
             }
-        }
-        yaml.dump(config, f)
-        yield f.name
-    os.unlink(f.name)
+        ]
+        
+        count = archive.archive_lineage(events)
+        assert count == 2
+        archive.close()
 
 
-@pytest.fixture
-def archiver(test_config):
-    return LineageArchiver(test_config)
+def test_query_historical_lineage():
+    """Test querying historical lineage data."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        archive = LineageArchive(f"{tmpdir}/test.duckdb")
+        
+        now = datetime.now()
+        events = [
+            {
+                'event_time': now - timedelta(days=10),
+                'source_table': 'cat.sch.src',
+                'target_table': 'cat.sch.tgt',
+                'operation': 'INSERT',
+                'metadata': {}
+            }
+        ]
+        
+        archive.archive_lineage(events)
+        
+        results = archive.query_historical(
+            (now - timedelta(days=30)).isoformat(),
+            now.isoformat()
+        )
+        
+        assert len(results) == 1
+        assert results[0]['source_table'] == 'cat.sch.src'
+        archive.close()
 
 
-@pytest.fixture
-def query_engine(test_config, archiver):
-    mock_data = [
-        {'catalog': 'main', 'schema': 'sales', 'table': 'orders',
-         'upstream': ['main.raw.raw_orders'], 'downstream': ['main.analytics.order_summary'],
-         'updated': datetime.now()}
-    ]
-    archiver.archive_lineage(mock_data)
-    return LineageQueryEngine(test_config)
-
-
-def test_schema_initialization(archiver):
-    result = archiver.conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()
-    table_names = [r[0] for r in result]
-    assert 'lineage_snapshots' in table_names
-    assert 'lineage_edges' in table_names
-
-
-def test_archive_lineage(archiver):
-    mock_data = [
-        {'catalog': 'main', 'schema': 'sales', 'table': 'orders',
-         'upstream': ['main.raw.raw_orders'], 'downstream': [],
-         'updated': datetime.now()}
-    ]
-    snapshot_id = archiver.archive_lineage(mock_data)
-    assert snapshot_id.startswith('snap_')
-    result = archiver.conn.execute(
-        "SELECT COUNT(*) FROM lineage_snapshots WHERE snapshot_id = ?",
-        [snapshot_id]
-    ).fetchone()
-    assert result[0] == 1
-
-
-def test_query_entity_lineage(query_engine):
-    results = query_engine.query_entity_lineage('main.sales.orders')
-    assert len(results) > 0
-    assert results[0]['source'] == 'main.raw.raw_orders'
-
-
-def test_audit_report(query_engine):
-    report = query_engine.audit_report('main.sales.orders')
-    assert 'entity' in report
-    assert report['entity'] == 'main.sales.orders'
-    assert report['total_edges'] > 0
-
-
-def test_query_snapshots(query_engine):
-    snapshots = query_engine.query_snapshots()
-    assert len(snapshots) > 0
-    assert 'id' in snapshots[0]
-    assert 'timestamp' in snapshots[0]
+def test_query_with_table_filter():
+    """Test querying with table name filter."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        archive = LineageArchive(f"{tmpdir}/test.duckdb")
+        
+        now = datetime.now()
+        events = [
+            {'event_time': now, 'source_table': 'cat.sch.customers',
+             'target_table': 'cat.sch.report', 'operation': 'INSERT',
+             'metadata': {}},
+            {'event_time': now, 'source_table': 'cat.sch.orders',
+             'target_table': 'cat.sch.summary', 'operation': 'INSERT',
+             'metadata': {}}
+        ]
+        
+        archive.archive_lineage(events)
+        results = archive.query_historical(
+            (now - timedelta(days=1)).isoformat(),
+            (now + timedelta(days=1)).isoformat(),
+            'customers'
+        )
+        
+        assert len(results) == 1
+        assert 'customers' in results[0]['source_table']
+        archive.close()
