@@ -1,67 +1,57 @@
-import argparse
 import sys
-from .peer_review.impact_analyzer import InteractiveImpactAnalyzer
-from .peer_review.governance import GovernancePolicy
+import json
+import argparse
+from scripts.peer_review.impact_analyzer import InteractiveImpactAnalyzer
+from scripts.peer_review.governance_policy import GovernancePolicy
 
-
-def impact_analysis_command(args):
+def run_impact_analysis(args):
+    """Run impact analysis command."""
     analyzer = InteractiveImpactAnalyzer()
     
-    # Simulate loading lineage (in production, load from metadata store)
-    analyzer.add_asset("companies_data.main.customers", {
-        "tags": ["PII", "customer"],
-        "owner": "data-team",
-        "quality_status": "healthy"
-    })
-    analyzer.add_asset("companies_data.main.orders", {
-        "tags": ["financial"],
-        "owner": "analytics-team",
-        "quality_status": "degraded"
-    })
-    analyzer.add_asset("companies_data.main.customer_360", {
-        "tags": ["PII", "analytics"],
-        "owner": "data-team",
-        "quality_status": "healthy"
-    })
-    analyzer.add_dependency("companies_data.main.customers", "companies_data.main.customer_360")
-    analyzer.add_dependency("companies_data.main.orders", "companies_data.main.customer_360")
+    if args.lineage_file:
+        with open(args.lineage_file, 'r') as f:
+            lineage_data = json.load(f)
+            for asset in lineage_data.get("assets", []):
+                analyzer.add_asset(asset["id"], asset.get("metadata", {}))
+            for dep in lineage_data.get("dependencies", []):
+                analyzer.add_dependency(dep["source"], dep["target"])
+    
+    if args.policy_file:
+        with open(args.policy_file, 'r') as f:
+            policies_data = json.load(f)
+            for p in policies_data.get("policies", []):
+                policy = GovernancePolicy(**p)
+                analyzer.add_policy(policy)
     
     filters = {}
-    if args.filter_tag:
-        filters["tags"] = [args.filter_tag]
-    if args.filter_owner:
-        filters["owner"] = args.filter_owner
-    if args.filter_quality:
-        filters["quality_status"] = args.filter_quality
+    if args.tags:
+        filters["tags"] = args.tags.split(",")
+    if args.owner:
+        filters["owner"] = args.owner
+    if args.quality_status:
+        filters["quality_status"] = args.quality_status
     
-    result = analyzer.analyze_impact(
-        asset_name=args.asset,
-        filters=filters,
-        max_depth=args.depth
-    )
-    
-    print(result.to_json())
-
+    result = analyzer.analyze_impact(args.asset_id, filters)
+    print(json.dumps(result, indent=2))
 
 def main():
     parser = argparse.ArgumentParser(description="Tracepipe AI CLI")
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(dest="command")
     
-    impact_parser = subparsers.add_parser("impact-analysis", help="Analyze impact of changes")
-    impact_parser.add_argument("--asset", required=True, help="Asset name to analyze")
-    impact_parser.add_argument("--filter-tag", help="Filter by tag")
-    impact_parser.add_argument("--filter-owner", help="Filter by owner")
-    impact_parser.add_argument("--filter-quality", help="Filter by quality status")
-    impact_parser.add_argument("--depth", type=int, default=None, help="Max traversal depth")
+    impact_parser = subparsers.add_parser("impact-analysis")
+    impact_parser.add_argument("asset_id", help="Asset ID to analyze")
+    impact_parser.add_argument("--lineage-file", help="JSON file with lineage")
+    impact_parser.add_argument("--policy-file", help="JSON file with policies")
+    impact_parser.add_argument("--tags", help="Filter by tags (comma-separated)")
+    impact_parser.add_argument("--owner", help="Filter by owner")
+    impact_parser.add_argument("--quality-status", help="Filter by quality status")
     
     args = parser.parse_args()
     
     if args.command == "impact-analysis":
-        impact_analysis_command(args)
+        run_impact_analysis(args)
     else:
         parser.print_help()
-        sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
