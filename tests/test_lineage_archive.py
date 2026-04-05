@@ -9,54 +9,74 @@ from tracepipe_ai.lineage_archive import LineageArchive
 def archive():
     with tempfile.NamedTemporaryFile(suffix=".duckdb", delete=False) as f:
         db_path = f.name
-    arc = LineageArchive(db_path)
-    yield arc
-    arc.close()
-    if os.path.exists(db_path):
+    
+    arch = LineageArchive(db_path)
+    yield arch
+    arch.close()
+    
+    try:
         os.unlink(db_path)
+    except:
+        pass
 
 
-def test_archive_lineage(archive):
-    timestamp = datetime.now()
-    result = archive.archive_lineage(
-        event_id="evt_001",
-        timestamp=timestamp,
-        source_table="catalog.schema.source",
-        target_table="catalog.schema.target",
-        operation_type="INSERT",
-        user_name="test_user",
-        metadata={"job_id": "123"}
-    )
-    assert result is True
+def test_archive_initialization(archive):
+    assert archive is not None
+    assert archive.conn is not None
 
 
-def test_query_lineage(archive):
-    now = datetime.now()
-    archive.archive_lineage(
-        "evt_001", now, "src1", "tgt1", "INSERT", "user1", {"k": "v"}
-    )
-    archive.archive_lineage(
-        "evt_002", now + timedelta(hours=1), "src2", "tgt2",
-        "UPDATE", "user2", {}
-    )
-    results = archive.query_lineage(now - timedelta(days=1), now + timedelta(days=1))
-    assert len(results) == 2
-
-
-def test_query_lineage_with_table_filter(archive):
-    now = datetime.now()
-    archive.archive_lineage("evt_001", now, "src1", "tgt1", "INSERT", "user1")
-    archive.archive_lineage("evt_002", now, "src2", "tgt2", "INSERT", "user2")
-    results = archive.query_lineage(
-        now - timedelta(days=1), now + timedelta(days=1), "src1"
-    )
+def test_archive_event(archive):
+    event = {
+        "event_id": "evt_001",
+        "event_type": "table_read",
+        "source_table": "catalog.schema.table_a",
+        "target_table": "catalog.schema.table_b",
+        "timestamp": datetime.now(),
+        "metadata": {"user": "test_user", "query_id": "q123"}
+    }
+    archive.archive_event(event)
+    
+    results = archive.query_by_table("catalog.schema.table_a")
     assert len(results) == 1
-    assert results[0]["source_table"] == "src1"
+    assert results[0]["event_id"] == "evt_001"
+    assert results[0]["event_type"] == "table_read"
 
 
-def test_get_statistics(archive):
+def test_query_by_date_range(archive):
     now = datetime.now()
-    archive.archive_lineage("evt_001", now, "src", "tgt", "INSERT", "user")
-    stats = archive.get_statistics()
-    assert stats["total_events"] == 1
-    assert stats["oldest_event"] is not None
+    past = now - timedelta(days=1)
+    future = now + timedelta(days=1)
+    
+    event1 = {
+        "event_id": "evt_001",
+        "event_type": "table_read",
+        "source_table": "table_a",
+        "target_table": "table_b",
+        "timestamp": now,
+        "metadata": {}
+    }
+    archive.archive_event(event1)
+    
+    results = archive.query_by_date_range(past, future)
+    assert len(results) >= 1
+    assert any(r["event_id"] == "evt_001" for r in results)
+
+
+def test_query_by_table(archive):
+    events = [
+        {
+            "event_id": f"evt_{i}",
+            "event_type": "table_read",
+            "source_table": "src_table",
+            "target_table": f"target_{i}",
+            "timestamp": datetime.now(),
+            "metadata": {}
+        }
+        for i in range(3)
+    ]
+    
+    for event in events:
+        archive.archive_event(event)
+    
+    results = archive.query_by_table("src_table")
+    assert len(results) == 3
