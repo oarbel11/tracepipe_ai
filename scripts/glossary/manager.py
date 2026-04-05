@@ -1,59 +1,75 @@
+"""Business Glossary Manager."""
 import json
 import os
-from typing import List, Optional
-from .models import Term, Ownership, Tag
+from typing import Dict, Optional, List
+from datetime import datetime
 
 
 class GlossaryManager:
-    def __init__(self, storage_path: str = '.glossary.json'):
+    """Manages business glossary terms and metadata."""
+
+    def __init__(self, storage_path: str = "data/glossary.json"):
         self.storage_path = storage_path
-        self.terms = {}
+        self.glossary: Dict[str, Dict] = {}
         self._load()
 
     def _load(self):
+        """Load glossary from JSON file."""
+        os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
         if os.path.exists(self.storage_path):
-            with open(self.storage_path, 'r') as f:
-                data = json.load(f)
-                self.terms = {k: Term.from_dict(v) for k, v in data.items()}
+            try:
+                with open(self.storage_path, 'r') as f:
+                    content = f.read().strip()
+                    if content:
+                        self.glossary = json.loads(content)
+                    else:
+                        self.glossary = {}
+            except (json.JSONDecodeError, IOError):
+                self.glossary = {}
+        else:
+            self.glossary = {}
+            self._save()
 
     def _save(self):
+        """Save glossary to JSON file."""
+        os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
         with open(self.storage_path, 'w') as f:
-            data = {k: v.to_dict() for k, v in self.terms.items()}
-            json.dump(data, f, indent=2)
+            json.dump(self.glossary, f, indent=2)
 
-    def add_term(self, term: Term):
-        self.terms[term.catalog_path] = term
+    def add_term(self, asset_id: str, term: Dict) -> Dict:
+        """Add or update a glossary term."""
+        term['updated_at'] = datetime.now().isoformat()
+        self.glossary[asset_id] = term
         self._save()
+        return term
 
-    def get_term(self, catalog_path: str) -> Optional[Term]:
-        return self.terms.get(catalog_path)
+    def get_term(self, asset_id: str) -> Optional[Dict]:
+        """Retrieve a glossary term."""
+        return self.glossary.get(asset_id)
 
-    def update_term(self, catalog_path: str, **kwargs):
-        if catalog_path in self.terms:
-            term = self.terms[catalog_path]
-            for key, value in kwargs.items():
-                if hasattr(term, key):
-                    setattr(term, key, value)
+    def update_term(self, asset_id: str, updates: Dict) -> Optional[Dict]:
+        """Update an existing term."""
+        if asset_id in self.glossary:
+            self.glossary[asset_id].update(updates)
+            self.glossary[asset_id]['updated_at'] = datetime.now().isoformat()
             self._save()
-            return term
+            return self.glossary[asset_id]
         return None
 
-    def delete_term(self, catalog_path: str) -> bool:
-        if catalog_path in self.terms:
-            del self.terms[catalog_path]
+    def delete_term(self, asset_id: str) -> bool:
+        """Delete a glossary term."""
+        if asset_id in self.glossary:
+            del self.glossary[asset_id]
             self._save()
             return True
         return False
 
-    def list_terms(self) -> List[Term]:
-        return list(self.terms.values())
-
-    def search_terms(self, query: str) -> List[Term]:
+    def search_terms(self, query: str) -> List[Dict]:
+        """Search terms by name or description."""
         results = []
         query_lower = query.lower()
-        for term in self.terms.values():
-            if (query_lower in term.name.lower() or
-                query_lower in term.definition.lower() or
-                query_lower in term.catalog_path.lower()):
-                results.append(term)
+        for asset_id, term in self.glossary.items():
+            if (query_lower in term.get('name', '').lower() or
+                    query_lower in term.get('description', '').lower()):
+                results.append({'asset_id': asset_id, **term})
         return results

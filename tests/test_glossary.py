@@ -1,78 +1,82 @@
-import pytest
+"""Tests for Business Glossary & Catalog Enrichment."""
 import os
 import tempfile
-from scripts.glossary import Term, Ownership, Tag, GlossaryManager, CatalogEnricher
+import pytest
+from scripts.glossary.manager import GlossaryManager
+from scripts.glossary.enricher import CatalogEnricher
 
 
 @pytest.fixture
 def temp_storage():
-    fd, path = tempfile.mkstemp(suffix='.json')
-    os.close(fd)
-    yield path
-    if os.path.exists(path):
-        os.unlink(path)
-
-
-def test_term_creation():
-    term = Term(
-        name='customer_id',
-        definition='Unique identifier for customers',
-        catalog_path='catalog.schema.customer_id',
-        pii_status=True
-    )
-    assert term.name == 'customer_id'
-    assert term.pii_status is True
+    """Create temporary storage for tests."""
+    temp_dir = tempfile.mkdtemp()
+    storage_path = os.path.join(temp_dir, "test_glossary.json")
+    yield storage_path
+    if os.path.exists(storage_path):
+        os.remove(storage_path)
+    os.rmdir(temp_dir)
 
 
 def test_glossary_manager_add_get(temp_storage):
+    """Test adding and retrieving glossary terms."""
     manager = GlossaryManager(temp_storage)
-    term = Term(
-        name='order_date',
-        definition='Date when order was placed',
-        catalog_path='catalog.orders.order_date'
-    )
-    manager.add_term(term)
-    retrieved = manager.get_term('catalog.orders.order_date')
+    term = {
+        'name': 'customer_id',
+        'description': 'Unique customer identifier',
+        'owner': 'data-team',
+        'tags': ['pii', 'critical']
+    }
+    manager.add_term('catalog.schema.table.customer_id', term)
+    retrieved = manager.get_term('catalog.schema.table.customer_id')
     assert retrieved is not None
-    assert retrieved.name == 'order_date'
+    assert retrieved['name'] == 'customer_id'
+    assert 'updated_at' in retrieved
 
 
 def test_glossary_manager_update(temp_storage):
+    """Test updating glossary terms."""
     manager = GlossaryManager(temp_storage)
-    term = Term(
-        name='price',
-        definition='Product price',
-        catalog_path='catalog.products.price'
-    )
-    manager.add_term(term)
-    updated = manager.update_term('catalog.products.price', definition='Updated price')
-    assert updated.definition == 'Updated price'
+    term = {'name': 'revenue', 'description': 'Total revenue'}
+    manager.add_term('asset1', term)
+    manager.update_term('asset1', {'owner': 'finance-team'})
+    updated = manager.get_term('asset1')
+    assert updated['owner'] == 'finance-team'
+    assert updated['name'] == 'revenue'
 
 
 def test_glossary_manager_delete(temp_storage):
+    """Test deleting glossary terms."""
     manager = GlossaryManager(temp_storage)
-    term = Term(
-        name='temp',
-        definition='Temporary field',
-        catalog_path='catalog.temp.field'
-    )
-    manager.add_term(term)
-    assert manager.delete_term('catalog.temp.field') is True
-    assert manager.get_term('catalog.temp.field') is None
+    manager.add_term('asset1', {'name': 'test'})
+    assert manager.delete_term('asset1') is True
+    assert manager.get_term('asset1') is None
+    assert manager.delete_term('nonexistent') is False
 
 
 def test_catalog_enricher(temp_storage):
+    """Test catalog enrichment."""
     manager = GlossaryManager(temp_storage)
     enricher = CatalogEnricher(manager)
-    term = Term(
-        name='customer_email',
-        definition='Customer email address',
-        catalog_path='catalog.users.email',
-        ownership=Ownership('data-team', 'engineering'),
-        pii_status=True
-    )
-    manager.add_term(term)
-    asset = {'name': 'email', 'catalog_path': 'catalog.users.email'}
-    enriched = enricher.enrich_asset('catalog.users.email', asset)
+    asset = {'id': 'table1', 'name': 'users'}
+    metadata = {
+        'description': 'User data table',
+        'owner': 'data-team',
+        'pii_status': True,
+        'quality_score': 0.95
+    }
+    enriched = enricher.enrich_asset(asset, metadata)
     assert 'business_metadata' in enriched
     assert enriched['business_metadata']['pii_status'] is True
+    assert enriched['business_metadata']['quality_score'] == 0.95
+
+
+def test_enricher_operations(temp_storage):
+    """Test enricher quality metrics and ownership."""
+    manager = GlossaryManager(temp_storage)
+    enricher = CatalogEnricher(manager)
+    manager.add_term('asset1', {'name': 'test_asset'})
+    assert enricher.set_ownership('asset1', 'john@example.com') is True
+    assert enricher.add_tags('asset1', ['important', 'reviewed']) is True
+    term = manager.get_term('asset1')
+    assert term['owner'] == 'john@example.com'
+    assert 'important' in term['tags']
