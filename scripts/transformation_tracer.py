@@ -1,81 +1,81 @@
 import re
-import networkx as nx
-from typing import Dict, List, Set, Tuple
-from dataclasses import dataclass
+import json
+from typing import Dict, List, Set, Optional, Any
+from dataclasses import dataclass, asdict
 
 @dataclass
 class ColumnLineage:
     source_column: str
     target_column: str
     transformation: str
-    source_table: str = ""
-    target_table: str = ""
+    source_table: Optional[str] = None
+    target_table: Optional[str] = None
 
 class TransformationTracer:
     def __init__(self):
-        self.graph = nx.DiGraph()
-        self.column_lineages = []
-
-    def parse_sql(self, sql: str) -> List[ColumnLineage]:
+        self.lineages: List[ColumnLineage] = []
+        self.graph: Dict[str, List[str]] = {}
+    
+    def parse_sql(self, sql: str, source_table: str = None, target_table: str = None) -> List[ColumnLineage]:
         lineages = []
         sql = sql.strip()
-        
-        select_pattern = r'SELECT\s+(.*?)\s+FROM'
-        match = re.search(select_pattern, sql, re.IGNORECASE | re.DOTALL)
-        if not match:
+        select_match = re.search(r'SELECT\s+(.+?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+        if not select_match:
             return lineages
-        
-        select_clause = match.group(1)
+        select_clause = select_match.group(1)
         columns = [c.strip() for c in select_clause.split(',')]
-        
         for col in columns:
-            if ' AS ' in col.upper():
-                parts = re.split(r'\s+AS\s+', col, flags=re.IGNORECASE)
-                expr = parts[0].strip()
-                alias = parts[1].strip()
-                source_cols = self._extract_column_refs(expr)
-                for src in source_cols:
-                    lineages.append(ColumnLineage(
-                        source_column=src,
-                        target_column=alias,
-                        transformation=expr
-                    ))
+            as_match = re.search(r'(.+?)\s+AS\s+(\w+)', col, re.IGNORECASE)
+            if as_match:
+                expr, alias = as_match.groups()
+                lineages.append(ColumnLineage(
+                    source_column=expr.strip(),
+                    target_column=alias.strip(),
+                    transformation=expr.strip(),
+                    source_table=source_table,
+                    target_table=target_table
+                ))
             else:
-                clean_col = col.strip()
-                if clean_col != '*':
+                col_name = col.strip()
+                if col_name != '*':
                     lineages.append(ColumnLineage(
-                        source_column=clean_col,
-                        target_column=clean_col,
-                        transformation="direct"
+                        source_column=col_name,
+                        target_column=col_name,
+                        transformation='direct',
+                        source_table=source_table,
+                        target_table=target_table
                     ))
-        
+        self.lineages.extend(lineages)
         return lineages
-
-    def _extract_column_refs(self, expr: str) -> List[str]:
-        pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b'
-        matches = re.findall(pattern, expr)
-        functions = {'SUM', 'COUNT', 'AVG', 'MAX', 'MIN', 'UPPER', 'LOWER'}
-        return [m for m in matches if m.upper() not in functions]
-
+    
     def parse_python(self, code: str) -> List[ColumnLineage]:
         lineages = []
-        pattern = r'df\["(\w+)"\]\s*=\s*(.+)'
-        matches = re.findall(pattern, code)
-        
-        for target, expr in matches:
-            source_cols = self._extract_column_refs(expr)
-            for src in source_cols:
+        lines = code.split('\n')
+        for line in lines:
+            assign_match = re.search(r'df\[[\'"](\w+)[\'"]\]\s*=\s*(.+)', line)
+            if assign_match:
+                col_name, expr = assign_match.groups()
                 lineages.append(ColumnLineage(
-                    source_column=src,
-                    target_column=target,
+                    source_column=expr.strip(),
+                    target_column=col_name,
                     transformation=expr.strip()
                 ))
-        
+        self.lineages.extend(lineages)
         return lineages
-
-    def build_graph(self, lineages: List[ColumnLineage]):
-        for lineage in lineages:
-            src_node = f"{lineage.source_table}.{lineage.source_column}" if lineage.source_table else lineage.source_column
-            tgt_node = f"{lineage.target_table}.{lineage.target_column}" if lineage.target_table else lineage.target_column
-            self.graph.add_edge(src_node, tgt_node, transformation=lineage.transformation)
-        self.column_lineages.extend(lineages)
+    
+    def build_graph(self) -> Dict[str, Any]:
+        nodes = set()
+        edges = []
+        for lin in self.lineages:
+            src = f"{lin.source_table or 'unknown'}.{lin.source_column}"
+            tgt = f"{lin.target_table or 'unknown'}.{lin.target_column}"
+            nodes.add(src)
+            nodes.add(tgt)
+            edges.append({'from': src, 'to': tgt, 'transformation': lin.transformation})
+        return {'nodes': list(nodes), 'edges': edges}
+    
+    def get_lineage_for_column(self, column: str) -> List[ColumnLineage]:
+        return [lin for lin in self.lineages if lin.target_column == column]
+    
+    def export_json(self) -> str:
+        return json.dumps([asdict(lin) for lin in self.lineages], indent=2)
