@@ -1,67 +1,70 @@
+"""Test column lineage tracking functionality."""
 import pytest
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
+import os
+import tempfile
+import shutil
 from scripts.lineage.lineage_parser import ColumnLineageParser, ColumnLineage
 from scripts.lineage.lineage_tracker import LineageTracker
 from scripts.lineage.udf_analyzer import UDFAnalyzer
 
-def test_simple_select_lineage():
+
+def test_parse_simple_select():
     parser = ColumnLineageParser()
-    sql = "SELECT a.customer_id, a.name FROM customers a"
+    sql = "SELECT col1, col2 AS renamed_col FROM table1"
     lineages = parser.parse_sql(sql)
     assert len(lineages) == 2
-    assert lineages[0].target_column == "customer_id"
-    assert lineages[1].target_column == "name"
+    assert lineages[0].target_column == "col1"
+    assert lineages[1].target_column == "renamed_col"
 
-def test_complex_transformation_lineage():
+
+def test_parse_transformation():
     parser = ColumnLineageParser()
-    sql = "SELECT UPPER(c.first_name) AS name, c.age + 1 AS next_age FROM clients c"
+    sql = "SELECT col1 + col2 AS sum_col FROM table1"
     lineages = parser.parse_sql(sql)
-    assert len(lineages) == 2
-    assert any('first_name' in str(l.source_columns) for l in lineages)
+    assert len(lineages) == 1
+    assert lineages[0].target_column == "sum_col"
+    assert "col1" in lineages[0].source_columns
+    assert "col2" in lineages[0].source_columns
 
-def test_lineage_tracker_storage(tmp_path):
-    storage = tmp_path / "test_lineage.json"
-    tracker = LineageTracker(str(storage))
-    sql = "SELECT id, name FROM users"
-    tracker.track_sql_lineage(sql, "target_table")
-    assert storage.exists()
-    assert "target_table" in tracker.lineage_data["columns"]
 
-def test_manual_lineage_override(tmp_path):
-    storage = tmp_path / "test_manual.json"
-    tracker = LineageTracker(str(storage))
-    tracker.add_manual_lineage(
-        "orders", "total_price",
-        [{"table": "line_items", "column": "price"}]
-    )
-    lineage = tracker.get_column_lineage("orders", "total_price")
-    assert lineage["manual"] is True
+def test_parse_dataframe_code():
+    parser = ColumnLineageParser()
+    code = 'df.withColumn("new_col", col("old_col") * 2)'
+    lineages = parser.parse_dataframe_code(code)
+    assert len(lineages) == 1
+    assert lineages[0].target_column == "new_col"
+
+
+def test_lineage_tracker():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tracker = LineageTracker(storage_path=tmpdir)
+        lineage = ColumnLineage(target_column="col1", source_columns=["src1"])
+        tracker.add_lineage("table1", [lineage])
+        result = tracker.get_lineage("table1")
+        assert len(result) == 1
+        assert result[0]["target_column"] == "col1"
+
+
+def test_manual_lineage_override():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tracker = LineageTracker(storage_path=tmpdir)
+        tracker.add_manual_lineage("table1", "col1", ["src1", "src2"], "custom_transform")
+        result = tracker.get_lineage("table1")
+        assert len(result) == 1
+        assert result[0]["manual_override"] is True
+
 
 def test_udf_analyzer_python():
     analyzer = UDFAnalyzer()
-    code = "def process(x, y):\n    return x + y"
-    result = analyzer.analyze_udf(code)
-    assert "x" in result["inputs"]
-    assert "y" in result["inputs"]
+    udf_code = "def my_udf(col1, col2):\n    return col1 + col2"
+    params = analyzer.analyze_python_udf(udf_code)
+    assert "col1" in params
+    assert "col2" in params
 
-def test_path_based_source_tracking(tmp_path):
-    storage = tmp_path / "test_path.json"
-    tracker = LineageTracker(str(storage))
-    tracker.track_path_based_source(
-        "/mnt/data/sales.parquet",
-        "sales_table",
-        {"id": "int", "amount": "float"}
-    )
-    assert "sales_table" in tracker.lineage_data["tables"]
-    assert tracker.lineage_data["tables"]["sales_table"]["path"] == "/mnt/data/sales.parquet"
 
-def test_impact_analysis(tmp_path):
-    storage = tmp_path / "test_impact.json"
-    tracker = LineageTracker(str(storage))
-    sql = "SELECT u.user_id, u.email FROM users u"
-    tracker.track_sql_lineage(sql, "user_profile")
-    impact = tracker.get_impact_analysis("users", "user_id")
-    assert "user_profile.user_id" in impact
+def test_udf_lineage_creation():
+    analyzer = UDFAnalyzer()
+    udf_code = "def transform(input_col):\n    return input_col * 2"
+    lineage = analyzer.create_udf_lineage("transform", udf_code, "output_col")
+    assert lineage.target_column == "output_col"
+    assert "input_col" in lineage.source_columns

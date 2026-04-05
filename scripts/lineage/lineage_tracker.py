@@ -1,76 +1,66 @@
+"""Track and manage column-level lineage metadata."""
 import json
 from typing import Dict, List, Optional
 from pathlib import Path
-from dataclasses import asdict
-from .lineage_parser import ColumnLineageParser, ColumnLineage
-from .udf_analyzer import UDFAnalyzer
+from scripts.lineage.lineage_parser import ColumnLineage
+
 
 class LineageTracker:
-    def __init__(self, storage_path: str = "lineage_metadata.json"):
+    """Manage column lineage metadata with manual overrides."""
+
+    def __init__(self, storage_path: str = "data/lineage"):
         self.storage_path = Path(storage_path)
-        self.parser = ColumnLineageParser()
-        self.udf_analyzer = UDFAnalyzer()
-        self.lineage_data = self._load_metadata()
-        self.manual_overrides = {}
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        self.lineage_store: Dict[str, List[Dict]] = {}
 
-    def _load_metadata(self) -> Dict:
-        if self.storage_path.exists():
-            with open(self.storage_path, 'r') as f:
-                return json.load(f)
-        return {"tables": {}, "columns": {}, "udfs": {}}
+    def add_lineage(self, table_name: str, lineages: List[ColumnLineage]):
+        """Add column lineage for a table."""
+        if table_name not in self.lineage_store:
+            self.lineage_store[table_name] = []
 
-    def _save_metadata(self):
-        with open(self.storage_path, 'w') as f:
-            json.dump(self.lineage_data, f, indent=2)
+        for lineage in lineages:
+            self.lineage_store[table_name].append({
+                'target_column': lineage.target_column,
+                'source_columns': lineage.source_columns,
+                'transformation': lineage.transformation,
+                'source_table': lineage.source_table
+            })
 
-    def track_sql_lineage(self, sql: str, target_table: str) -> List[ColumnLineage]:
-        lineages = self.parser.parse_sql(sql)
-        self._store_lineage(target_table, lineages)
-        return lineages
+    def add_manual_lineage(self, table_name: str, target_column: str,
+                          source_columns: List[str], transformation: str = ""):
+        """Manually define or override lineage."""
+        if table_name not in self.lineage_store:
+            self.lineage_store[table_name] = []
 
-    def track_path_based_source(self, path: str, table_name: str, schema: Dict[str, str]):
-        if table_name not in self.lineage_data["tables"]:
-            self.lineage_data["tables"][table_name] = {}
-        self.lineage_data["tables"][table_name]["path"] = path
-        self.lineage_data["tables"][table_name]["schema"] = schema
-        self._save_metadata()
+        existing = [l for l in self.lineage_store[table_name]
+                   if l['target_column'] == target_column]
+        if existing:
+            existing[0].update({
+                'source_columns': source_columns,
+                'transformation': transformation,
+                'manual_override': True
+            })
+        else:
+            self.lineage_store[table_name].append({
+                'target_column': target_column,
+                'source_columns': source_columns,
+                'transformation': transformation,
+                'manual_override': True
+            })
 
-    def register_udf_lineage(self, udf_name: str, code: str):
-        lineage = self.udf_analyzer.analyze_udf(code)
-        self.lineage_data["udfs"][udf_name] = lineage
-        self._save_metadata()
+    def get_lineage(self, table_name: str) -> List[Dict]:
+        """Get lineage for a table."""
+        return self.lineage_store.get(table_name, [])
 
-    def add_manual_lineage(self, target_table: str, target_col: str, 
-                          source_mappings: List[Dict[str, str]]):
-        key = f"{target_table}.{target_col}"
-        self.manual_overrides[key] = source_mappings
-        if target_table not in self.lineage_data["columns"]:
-            self.lineage_data["columns"][target_table] = {}
-        self.lineage_data["columns"][target_table][target_col] = {
-            "manual": True,
-            "sources": source_mappings
-        }
-        self._save_metadata()
+    def save(self):
+        """Persist lineage to disk."""
+        output_file = self.storage_path / "lineage_metadata.json"
+        with open(output_file, 'w') as f:
+            json.dump(self.lineage_store, f, indent=2)
 
-    def _store_lineage(self, target_table: str, lineages: List[ColumnLineage]):
-        if target_table not in self.lineage_data["columns"]:
-            self.lineage_data["columns"][target_table] = {}
-        for lin in lineages:
-            key = f"{target_table}.{lin.target_column}"
-            if key not in self.manual_overrides:
-                self.lineage_data["columns"][target_table][lin.target_column] = asdict(lin)
-        self._save_metadata()
-
-    def get_column_lineage(self, table: str, column: str) -> Optional[Dict]:
-        return self.lineage_data.get("columns", {}).get(table, {}).get(column)
-
-    def get_impact_analysis(self, source_table: str, source_column: str) -> List[str]:
-        impacted = []
-        for table, cols in self.lineage_data.get("columns", {}).items():
-            for col, lineage in cols.items():
-                sources = lineage.get("source_columns", [])
-                for src in sources:
-                    if isinstance(src, list) and len(src) == 2:
-                        if src[0] == source_table and src[1] == source_column:
-                            impacted.append(f"{table}.{col}")
-        return impacted
+    def load(self):
+        """Load lineage from disk."""
+        input_file = self.storage_path / "lineage_metadata.json"
+        if input_file.exists():
+            with open(input_file, 'r') as f:
+                self.lineage_store = json.load(f)

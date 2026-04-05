@@ -1,74 +1,54 @@
-import re
+"""Analyze UDF code to infer column mappings."""
 import ast
-from typing import Dict, List, Set
+import re
+from typing import List, Dict
+from scripts.lineage.lineage_parser import ColumnLineage
+
 
 class UDFAnalyzer:
-    def __init__(self):
-        self.input_params = []
-        self.output_dependencies = {}
+    """Analyze UDF code to extract column dependencies."""
 
-    def analyze_udf(self, code: str) -> Dict:
+    def analyze_python_udf(self, udf_code: str) -> List[str]:
+        """Analyze Python UDF to extract input column references."""
         try:
-            tree = ast.parse(code)
-            return self._analyze_ast(tree)
+            tree = ast.parse(udf_code)
+            params = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    params = [arg.arg for arg in node.args.args]
+                    break
+            return params
         except SyntaxError:
-            return self._fallback_regex_analysis(code)
+            return self._extract_params_regex(udf_code)
 
-    def _analyze_ast(self, tree: ast.AST) -> Dict:
-        lineage = {"inputs": [], "outputs": [], "transformations": []}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                lineage["inputs"] = [arg.arg for arg in node.args.args]
-                lineage["outputs"] = self._extract_return_deps(node)
-                lineage["transformations"] = self._extract_transformations(node)
-        return lineage
+    def _extract_params_regex(self, code: str) -> List[str]:
+        """Fallback regex extraction of function parameters."""
+        match = re.search(r'def\s+\w+\s*\(([^)]*)\)', code)
+        if match:
+            params = match.group(1).split(',')
+            return [p.strip().split(':')[0].strip() for p in params if p.strip()]
+        return []
 
-    def _extract_return_deps(self, func_node: ast.FunctionDef) -> List[str]:
-        deps = []
-        for node in ast.walk(func_node):
-            if isinstance(node, ast.Return) and node.value:
-                deps.extend(self._get_variable_names(node.value))
-        return deps
+    def analyze_scala_udf(self, udf_code: str) -> List[str]:
+        """Analyze Scala UDF to extract input parameters."""
+        match = re.search(r'\(([^)]*)\)\s*=>', udf_code)
+        if match:
+            params = match.group(1).split(',')
+            return [p.strip().split(':')[0].strip() for p in params if p.strip()]
+        return []
 
-    def _get_variable_names(self, node: ast.AST) -> List[str]:
-        names = []
-        for n in ast.walk(node):
-            if isinstance(n, ast.Name):
-                names.append(n.id)
-            elif isinstance(n, ast.Attribute):
-                names.append(n.attr)
-        return names
+    def create_udf_lineage(self, udf_name: str, udf_code: str,
+                          target_column: str, language: str = 'python') -> ColumnLineage:
+        """Create lineage info from UDF analysis."""
+        if language.lower() == 'python':
+            sources = self.analyze_python_udf(udf_code)
+        elif language.lower() == 'scala':
+            sources = self.analyze_scala_udf(udf_code)
+        else:
+            sources = []
 
-    def _extract_transformations(self, func_node: ast.FunctionDef) -> List[str]:
-        transforms = []
-        for node in ast.walk(func_node):
-            if isinstance(node, ast.Call):
-                if isinstance(node.func, ast.Name):
-                    transforms.append(node.func.id)
-                elif isinstance(node.func, ast.Attribute):
-                    transforms.append(node.func.attr)
-        return list(set(transforms))
-
-    def _fallback_regex_analysis(self, code: str) -> Dict:
-        lineage = {"inputs": [], "outputs": [], "transformations": [], "confidence": 0.5}
-        func_match = re.search(r'def\s+\w+\(([^)]*)\)', code)
-        if func_match:
-            params = func_match.group(1).split(',')
-            lineage["inputs"] = [p.strip().split(':')[0].strip() for p in params if p.strip()]
-        return_matches = re.findall(r'return\s+([\w.]+)', code)
-        lineage["outputs"] = return_matches
-        lineage["transformations"] = re.findall(r'\.(\w+)\(', code)
-        return lineage
-
-    def infer_column_mapping(self, udf_name: str, input_columns: List[str], 
-                            udf_metadata: Dict) -> Dict[str, List[str]]:
-        mapping = {}
-        inputs = udf_metadata.get("inputs", [])
-        outputs = udf_metadata.get("outputs", [])
-        for i, inp in enumerate(inputs):
-            if i < len(input_columns):
-                for out in outputs:
-                    if out not in mapping:
-                        mapping[out] = []
-                    mapping[out].append(input_columns[i])
-        return mapping
+        return ColumnLineage(
+            target_column=target_column,
+            source_columns=sources,
+            transformation=f"UDF: {udf_name}"
+        )

@@ -1,76 +1,75 @@
-import sqlparse
+"""Parse SQL and code to extract column-level lineage."""
 import re
-from typing import Dict, List, Set, Tuple
-from dataclasses import dataclass
+from typing import Dict, List, Set
+from dataclasses import dataclass, field
+
 
 @dataclass
 class ColumnLineage:
+    """Column lineage information."""
     target_column: str
-    source_columns: List[Tuple[str, str]]
-    transformation: str
-    confidence: float
+    source_columns: List[str] = field(default_factory=list)
+    transformation: str = ""
+    source_table: str = ""
+
 
 class ColumnLineageParser:
-    def __init__(self):
-        self.column_map = {}
-        self.table_aliases = {}
+    """Parse SQL to extract column-level lineage."""
 
     def parse_sql(self, sql: str) -> List[ColumnLineage]:
-        parsed = sqlparse.parse(sql)[0]
-        self._extract_table_aliases(parsed)
-        return self._extract_column_lineage(parsed)
-
-    def _extract_table_aliases(self, parsed):
-        self.table_aliases = {}
-        from_seen = False
-        for token in parsed.tokens:
-            if token.ttype is None and hasattr(token, 'tokens'):
-                if 'FROM' in str(token).upper():
-                    from_seen = True
-                if from_seen:
-                    match = re.search(r'(\w+)\s+(?:AS\s+)?(\w+)', str(token), re.I)
-                    if match:
-                        table, alias = match.groups()
-                        self.table_aliases[alias] = table
-
-    def _extract_column_lineage(self, parsed) -> List[ColumnLineage]:
+        """Parse SQL and extract column lineage."""
         lineages = []
-        select_cols = self._get_select_columns(parsed)
-        for col_expr, col_name in select_cols:
-            sources = self._identify_source_columns(col_expr)
-            lineages.append(ColumnLineage(
-                target_column=col_name,
-                source_columns=sources,
-                transformation=col_expr,
-                confidence=0.9 if sources else 0.5
-            ))
+        sql_upper = sql.upper()
+
+        if 'SELECT' in sql_upper:
+            select_match = re.search(r'SELECT\s+(.+?)\s+FROM', sql, re.IGNORECASE | re.DOTALL)
+            if select_match:
+                select_clause = select_match.group(1)
+                columns = [c.strip() for c in select_clause.split(',')]
+
+                for col in columns:
+                    if ' AS ' in col.upper():
+                        parts = re.split(r'\s+AS\s+', col, flags=re.IGNORECASE)
+                        expr = parts[0].strip()
+                        alias = parts[1].strip()
+                        sources = self._extract_column_refs(expr)
+                        lineages.append(ColumnLineage(
+                            target_column=alias,
+                            source_columns=sources,
+                            transformation=expr
+                        ))
+                    else:
+                        col_name = col.strip()
+                        if col_name != '*':
+                            sources = self._extract_column_refs(col_name)
+                            lineages.append(ColumnLineage(
+                                target_column=col_name,
+                                source_columns=sources if sources else [col_name],
+                                transformation=col_name
+                            ))
+
         return lineages
 
-    def _get_select_columns(self, parsed) -> List[Tuple[str, str]]:
-        columns = []
-        in_select = False
-        for token in parsed.tokens:
-            if token.ttype == sqlparse.tokens.DML and token.value.upper() == 'SELECT':
-                in_select = True
-                continue
-            if in_select and token.ttype is None:
-                cols_str = str(token).split(',') if ',' in str(token) else [str(token)]
-                for col in cols_str:
-                    col = col.strip()
-                    if ' AS ' in col.upper():
-                        expr, name = re.split(r'\s+AS\s+', col, flags=re.I)
-                        columns.append((expr.strip(), name.strip()))
-                    else:
-                        name = col.split('.')[-1] if '.' in col else col
-                        columns.append((col, name.strip()))
-                break
-        return columns
+    def _extract_column_refs(self, expr: str) -> List[str]:
+        """Extract column references from expression."""
+        matches = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', expr)
+        keywords = {'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'AS', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END'}
+        return [m for m in matches if m.upper() not in keywords]
 
-    def _identify_source_columns(self, expression: str) -> List[Tuple[str, str]]:
-        sources = []
-        pattern = r'(\w+)\.(\w+)'
-        matches = re.findall(pattern, expression)
-        for alias, col in matches:
-            table = self.table_aliases.get(alias, alias)
-            sources.append((table, col))
-        return sources
+    def parse_dataframe_code(self, code: str) -> List[ColumnLineage]:
+        """Parse DataFrame transformation code."""
+        lineages = []
+        withcolumn_pattern = r'\.withColumn\s*\(\s*["\']([^"\'\']+)["\']\s*,\s*(.+?)\)'
+        matches = re.finditer(withcolumn_pattern, code)
+
+        for match in matches:
+            target = match.group(1)
+            expr = match.group(2)
+            sources = self._extract_column_refs(expr)
+            lineages.append(ColumnLineage(
+                target_column=target,
+                source_columns=sources,
+                transformation=expr
+            ))
+
+        return lineages
