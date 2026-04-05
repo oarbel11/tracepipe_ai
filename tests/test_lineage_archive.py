@@ -1,75 +1,78 @@
-import unittest
+import pytest
 import os
-from datetime import datetime, timedelta
 import tempfile
-from pathlib import Path
-import json
-
+from datetime import datetime, timedelta
 from tracepipe_ai.lineage_archive import LineageArchive
+from tracepipe_ai.databricks_collector import DatabricksLineageCollector
 
 
-class TestLineageArchive(unittest.TestCase):
-    def setUp(self):
-        self.temp_dir = tempfile.mkdtemp()
-        self.db_path = os.path.join(self.temp_dir, "test_archive.duckdb")
-        self.archive = LineageArchive(self.db_path)
+@pytest.fixture
+def temp_db():
+    with tempfile.NamedTemporaryFile(suffix=".duckdb", delete=False) as f:
+        db_path = f.name
+    yield db_path
+    if os.path.exists(db_path):
+        os.remove(db_path)
 
-    def tearDown(self):
-        self.archive.close()
-        if os.path.exists(self.db_path):
-            os.remove(self.db_path)
-        os.rmdir(self.temp_dir)
 
-    def test_archive_lineage(self):
-        lineage_data = {
-            "id": "test_table_001",
-            "entity_type": "table",
-            "entity_name": "catalog.schema.test_table",
-            "upstream_entities": ["catalog.schema.source_table"],
-            "downstream_entities": ["catalog.schema.target_table"],
-            "metadata": {"owner": "test_user", "columns": ["col1", "col2"]},
-            "captured_at": datetime.now(),
-            "source": "databricks"
+def test_lineage_archive_init(temp_db):
+    archive = LineageArchive(db_path=temp_db)
+    assert archive is not None
+    stats = archive.get_statistics()
+    assert stats["total"] == 0
+    archive.close()
+
+
+def test_archive_lineage_events(temp_db):
+    archive = LineageArchive(db_path=temp_db)
+    events = [
+        {
+            "id": "event1",
+            "event_type": "table_read",
+            "source_table": "catalog.schema.table1",
+            "target_table": "catalog.schema.table2",
+            "timestamp": datetime.now(),
+            "metadata": {"user": "test_user"}
         }
-        result = self.archive.archive_lineage(lineage_data)
-        self.assertTrue(result)
+    ]
+    count = archive.archive_lineage(events)
+    assert count == 1
+    stats = archive.get_statistics()
+    assert stats["total"] == 1
+    archive.close()
 
-    def test_query_historical_lineage(self):
-        now = datetime.now()
-        lineage_data = {
-            "id": "test_query_001",
-            "entity_type": "table",
-            "entity_name": "catalog.schema.query_table",
-            "upstream_entities": [],
-            "downstream_entities": [],
-            "metadata": {},
-            "captured_at": now,
-            "source": "databricks"
-        }
-        self.archive.archive_lineage(lineage_data)
-        
-        results = self.archive.query_historical_lineage("catalog.schema.query_table")
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["entity_name"], "catalog.schema.query_table")
 
-    def test_query_with_date_range(self):
-        now = datetime.now()
-        past = now - timedelta(days=30)
-        lineage_data = {
-            "id": "test_range_001",
-            "entity_type": "table",
-            "entity_name": "catalog.schema.range_table",
-            "upstream_entities": [],
-            "downstream_entities": [],
-            "metadata": {},
-            "captured_at": past,
-            "source": "databricks"
+def test_query_historical_lineage(temp_db):
+    archive = LineageArchive(db_path=temp_db)
+    now = datetime.now()
+    events = [
+        {
+            "id": "event1",
+            "event_type": "table_read",
+            "source_table": "catalog.schema.table1",
+            "target_table": "catalog.schema.table2",
+            "timestamp": now - timedelta(days=2),
+            "metadata": {}
+        },
+        {
+            "id": "event2",
+            "event_type": "table_write",
+            "source_table": "catalog.schema.table2",
+            "target_table": "catalog.schema.table3",
+            "timestamp": now - timedelta(days=1),
+            "metadata": {}
         }
-        self.archive.archive_lineage(lineage_data)
-        
-        results = self.archive.query_historical_lineage(
-            "catalog.schema.range_table",
-            start_date=past - timedelta(days=1),
-            end_date=now
-        )
-        self.assertEqual(len(results), 1)
+    ]
+    archive.archive_lineage(events)
+    results = archive.query_historical_lineage(
+        start_date=now - timedelta(days=3),
+        end_date=now
+    )
+    assert len(results) == 2
+    archive.close()
+
+
+def test_databricks_collector_init():
+    collector = DatabricksLineageCollector()
+    assert collector is not None
+    assert not collector.is_configured()

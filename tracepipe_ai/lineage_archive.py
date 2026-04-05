@@ -1,8 +1,8 @@
-import json
 from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
 import duckdb
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+import json
+import os
 
 
 class LineageArchive:
@@ -13,68 +13,68 @@ class LineageArchive:
 
     def _initialize_schema(self):
         self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS lineage_metadata (
+            CREATE TABLE IF NOT EXISTS lineage_events (
                 id VARCHAR PRIMARY KEY,
-                entity_type VARCHAR,
-                entity_name VARCHAR,
-                upstream_entities JSON,
-                downstream_entities JSON,
-                metadata JSON,
-                captured_at TIMESTAMP,
-                source VARCHAR
+                event_type VARCHAR,
+                source_table VARCHAR,
+                target_table VARCHAR,
+                timestamp TIMESTAMP,
+                metadata VARCHAR,
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_entity_name 
-            ON lineage_metadata(entity_name)
+            CREATE INDEX IF NOT EXISTS idx_timestamp
+            ON lineage_events(timestamp)
         """)
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_captured_at 
-            ON lineage_metadata(captured_at)
+            CREATE INDEX IF NOT EXISTS idx_source
+            ON lineage_events(source_table)
+        """)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_target
+            ON lineage_events(target_table)
         """)
 
-    def archive_lineage(self, lineage_data: Dict[str, Any]) -> bool:
-        try:
-            entity_id = lineage_data.get("id", f"{lineage_data['entity_name']}_{datetime.now().isoformat()}")
+    def archive_lineage(self, events: List[Dict[str, Any]]) -> int:
+        archived = 0
+        for event in events:
             self.conn.execute("""
-                INSERT OR REPLACE INTO lineage_metadata 
-                (id, entity_type, entity_name, upstream_entities, 
-                 downstream_entities, metadata, captured_at, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO lineage_events
+                (id, event_type, source_table, target_table, timestamp, metadata)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, [
-                entity_id,
-                lineage_data.get("entity_type"),
-                lineage_data.get("entity_name"),
-                json.dumps(lineage_data.get("upstream_entities", [])),
-                json.dumps(lineage_data.get("downstream_entities", [])),
-                json.dumps(lineage_data.get("metadata", {})),
-                lineage_data.get("captured_at", datetime.now()),
-                lineage_data.get("source", "databricks")
+                event.get("id"),
+                event.get("event_type"),
+                event.get("source_table"),
+                event.get("target_table"),
+                event.get("timestamp"),
+                json.dumps(event.get("metadata", {}))
             ])
-            return True
-        except Exception as e:
-            print(f"Error archiving lineage: {e}")
-            return False
+            archived += 1
+        return archived
 
-    def query_historical_lineage(self, entity_name: str, 
-                                  start_date: Optional[datetime] = None,
-                                  end_date: Optional[datetime] = None) -> List[Dict]:
-        query = "SELECT * FROM lineage_metadata WHERE entity_name = ?"
-        params = [entity_name]
-        
-        if start_date:
-            query += " AND captured_at >= ?"
-            params.append(start_date)
-        if end_date:
-            query += " AND captured_at <= ?"
-            params.append(end_date)
-        
-        query += " ORDER BY captured_at DESC"
+    def query_historical_lineage(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        table_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM lineage_events WHERE timestamp BETWEEN ? AND ?"
+        params = [start_date, end_date]
+        if table_name:
+            query += " AND (source_table = ? OR target_table = ?)"
+            params.extend([table_name, table_name])
         result = self.conn.execute(query, params).fetchall()
-        return [dict(zip(["id", "entity_type", "entity_name", "upstream_entities",
-                          "downstream_entities", "metadata", "captured_at", "source"], row)) 
-                for row in result]
+        columns = [desc[0] for desc in self.conn.description]
+        return [dict(zip(columns, row)) for row in result]
+
+    def get_statistics(self) -> Dict[str, Any]:
+        stats = self.conn.execute("""
+            SELECT COUNT(*) as total, MIN(timestamp) as oldest,
+            MAX(timestamp) as newest FROM lineage_events
+        """).fetchone()
+        return {"total": stats[0], "oldest": stats[1], "newest": stats[2]}
 
     def close(self):
-        if self.conn:
-            self.conn.close()
+        self.conn.close()
