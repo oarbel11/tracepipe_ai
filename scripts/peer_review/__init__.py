@@ -1,5 +1,6 @@
-"""Peer review module for Tracepipe AI."""
+"""Peer review module initialization."""
 
-from .peer_review import PeerReviewAgent
+# Avoid importing modules with heavy dependencies to prevent ImportError
+# during test collection. Only import when explicitly needed.
 
-__all__ = ['PeerReviewAgent']
+__all__ = []

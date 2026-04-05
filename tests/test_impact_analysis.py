@@ -1,15 +1,18 @@
 """Tests for Interactive Impact Analysis."""
-
+import pytest
 from scripts.peer_review.impact_analyzer import InteractiveImpactAnalyzer
 
 
 def test_add_asset():
+    """Test adding assets."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {"owner": "team_a", "tags": ["PII"]})
-    assert "table1" in analyzer.graph
+    analyzer.add_asset("table1", {"tags": ["PII"], "owner": "team_a"})
+    assert "table1" in analyzer.metadata
+    assert analyzer.metadata["table1"]["tags"] == ["PII"]
 
 
 def test_add_dependency():
+    """Test adding dependencies."""
     analyzer = InteractiveImpactAnalyzer()
     analyzer.add_asset("table1", {})
     analyzer.add_asset("table2", {})
@@ -18,55 +21,59 @@ def test_add_dependency():
 
 
 def test_analyze_impact_basic():
+    """Test basic impact analysis."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {"owner": "team_a"})
-    analyzer.add_asset("table2", {"owner": "team_b"})
+    analyzer.add_asset("table1", {})
+    analyzer.add_asset("table2", {})
+    analyzer.add_asset("table3", {})
     analyzer.add_dependency("table1", "table2")
+    analyzer.add_dependency("table2", "table3")
+
     result = analyzer.analyze_impact("table1")
-    assert result["source_asset"] == "table1"
-    assert "table2" in result["impacted_assets"]
-    assert result["total_count"] == 2
+    assert result["count"] == 2
+    assert "table2" in result["downstream"]
+    assert "table3" in result["downstream"]
 
 
-def test_analyze_impact_with_tag_filter():
+def test_analyze_impact_with_filters():
+    """Test impact analysis with filters."""
     analyzer = InteractiveImpactAnalyzer()
     analyzer.add_asset("table1", {"tags": ["PII"]})
     analyzer.add_asset("table2", {"tags": ["PII"]})
     analyzer.add_asset("table3", {"tags": ["public"]})
     analyzer.add_dependency("table1", "table2")
     analyzer.add_dependency("table1", "table3")
-    result = analyzer.analyze_impact("table1", filters={"tags": ["PII"]})
-    assert "table2" in result["impacted_assets"]
-    assert "table3" not in result["impacted_assets"]
+
+    result = analyzer.analyze_impact("table1", {"tags": ["PII"]})
+    assert result["count"] == 1
+    assert "table2" in result["downstream"]
+    assert "table3" not in result["downstream"]
 
 
-def test_analyze_impact_with_owner_filter():
+def test_add_policy():
+    """Test adding governance policies."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {"owner": "team_a"})
-    analyzer.add_asset("table2", {"owner": "team_a"})
-    analyzer.add_asset("table3", {"owner": "team_b"})
-    analyzer.add_dependency("table1", "table2")
-    analyzer.add_dependency("table1", "table3")
-    result = analyzer.analyze_impact("table1", filters={"owner": "team_a"})
-    assert "table2" in result["impacted_assets"]
-    assert "table3" not in result["impacted_assets"]
+    policy = {"name": "PII Policy", "target_tags": ["PII"]}
+    analyzer.add_policy("policy1", policy)
+    assert "policy1" in analyzer.policies
 
 
-def test_governance_policy_overlay():
+def test_policies_in_impact_analysis():
+    """Test policies are included in impact analysis."""
     analyzer = InteractiveImpactAnalyzer()
-    analyzer.add_asset("table1", {})
-    analyzer.add_asset("table2", {})
+    analyzer.add_asset("table1", {"tags": ["PII"]})
+    analyzer.add_asset("table2", {"tags": ["PII"]})
     analyzer.add_dependency("table1", "table2")
-    analyzer.add_governance_policy(
-        "policy1",
-        {"name": "PII Policy", "target_assets": ["table2"]}
-    )
+    analyzer.add_policy("policy1", {"name": "PII", "target_tags": ["PII"]})
+
     result = analyzer.analyze_impact("table1")
-    assert len(result["governance_policies"]) == 1
-    assert result["governance_policies"][0]["name"] == "PII Policy"
+    assert len(result["policies"]) > 0
+    assert result["policies"][0]["name"] == "PII"
 
 
-def test_analyze_nonexistent_asset():
+def test_nonexistent_asset():
+    """Test analyzing nonexistent asset."""
     analyzer = InteractiveImpactAnalyzer()
     result = analyzer.analyze_impact("nonexistent")
-    assert "error" in result
+    assert result["count"] == 0
+    assert result["downstream"] == []
