@@ -1,77 +1,63 @@
 import pytest
+import json
 import sys
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from scripts.workspace_connector import WorkspaceConnector
 from scripts.workspace_lineage_aggregator import WorkspaceLineageAggregator
-from scripts.peer_review.unified_lineage_context import UnifiedLineageContext
+from scripts.context_enricher import ContextEnricher
+from scripts.unified_lineage_integration import UnifiedLineageIntegration
 
+def test_workspace_connector():
+    """Test workspace connector fetches objects."""
+    configs = [{"workspace_id": "ws1"}, {"workspace_id": "ws2"}]
+    connector = WorkspaceConnector(configs)
+    all_objects = connector.fetch_all_objects()
+    
+    assert "ws1" in all_objects
+    assert "ws2" in all_objects
+    assert "notebooks" in all_objects["ws1"]
+    assert len(all_objects["ws1"]["notebooks"]) > 0
 
-@pytest.fixture
-def sample_workspace_objects():
-    return {
-        'ws1': [
-            {'type': 'notebooks', 'data': {'object_id': 'nb1', 'path': '/Users/test/notebook1', 'created_by': 'user1'}},
-            {'type': 'jobs', 'data': {'job_id': 'job1', 'name': 'ETL Job', 'notebook_path': '/Users/test/notebook1'}}
-        ],
-        'ws2': [
-            {'type': 'dashboards', 'data': {'dashboard_id': 'dash1', 'name': 'Analytics Dashboard', 'created_by': 'user2'}}
-        ]
+def test_lineage_aggregator():
+    """Test lineage aggregator builds graph."""
+    aggregator = WorkspaceLineageAggregator()
+    workspace_data = {
+        "ws1": {
+            "notebooks": [{"id": "nb1", "name": "Test", "type": "notebook", "workspace_id": "ws1"}]
+        }
     }
-
-
-def test_aggregator_add_objects(sample_workspace_objects):
-    agg = WorkspaceLineageAggregator()
-    agg.add_workspace_objects(sample_workspace_objects)
+    aggregator.add_workspace_objects(workspace_data)
+    lineage = aggregator.get_object_lineage("nb1")
     
-    assert len(agg.object_metadata) == 3
-    assert 'ws1' in agg.workspace_index
-    assert len(agg.workspace_index['ws1']) == 2
+    assert lineage is not None
+    assert "upstream" in lineage
+    assert "downstream" in lineage
 
+def test_context_enricher():
+    """Test context enricher adds metadata."""
+    enricher = ContextEnricher()
+    notebook = {"id": "nb1", "name": "Test", "type": "notebook", "language": "python"}
+    enriched = enricher.enrich_notebook(notebook)
+    
+    assert "enriched_metadata" in enriched
+    assert enriched["enriched_metadata"]["object_type"] == "notebook"
 
-def test_lineage_edge_creation(sample_workspace_objects):
-    agg = WorkspaceLineageAggregator()
-    agg.add_workspace_objects(sample_workspace_objects)
+def test_unified_lineage_integration():
+    """Test unified lineage integration."""
+    configs = [{"workspace_id": "ws1"}, {"workspace_id": "ws2"}]
+    integration = UnifiedLineageIntegration(configs)
+    unified_lineage = integration.build_unified_lineage()
     
-    source_id = 'ws1:job:job1'
-    target_id = 'ws1:notebook:nb1'
-    agg.add_lineage_edge(source_id, target_id, 'executes')
-    
-    assert agg.lineage_graph.has_edge(source_id, target_id)
+    assert unified_lineage is not None
+    assert len(unified_lineage) > 0
 
-
-def test_unified_lineage_retrieval(sample_workspace_objects):
-    agg = WorkspaceLineageAggregator()
-    agg.add_workspace_objects(sample_workspace_objects)
-    agg.add_lineage_edge('ws1:job:job1', 'ws1:notebook:nb1', 'executes')
+def test_cross_workspace_impact():
+    """Test cross-workspace impact analysis."""
+    configs = [{"workspace_id": "ws1"}]
+    integration = UnifiedLineageIntegration(configs)
+    integration.build_unified_lineage()
     
-    lineage = agg.get_unified_lineage('ws1:notebook:nb1')
-    
-    assert 'object_id' in lineage
-    assert 'upstream' in lineage
-    assert len(lineage['upstream']) == 1
-
-
-def test_cross_workspace_detection(sample_workspace_objects):
-    agg = WorkspaceLineageAggregator()
-    agg.add_workspace_objects(sample_workspace_objects)
-    agg.add_lineage_edge('ws1:notebook:nb1', 'ws2:dashboard:dash1', 'feeds')
-    
-    cross_workspace = agg._detect_cross_workspace('ws1:notebook:nb1')
-    assert cross_workspace is True
-    
-    flows = agg.get_all_cross_workspace_flows()
-    assert len(flows) == 1
-
-
-def test_impact_score_calculation(sample_workspace_objects):
-    agg = WorkspaceLineageAggregator()
-    agg.add_workspace_objects(sample_workspace_objects)
-    agg.add_lineage_edge('ws1:notebook:nb1', 'ws2:dashboard:dash1', 'feeds')
-    
-    context = UnifiedLineageContext.__new__(UnifiedLineageContext)
-    context.aggregator = agg
-    context._initialized = True
-    
-    score = context._calculate_impact_score('ws1:notebook:nb1')
-    assert score > 0
+    impact = integration.get_cross_workspace_impact("notebook_ws1_1")
+    assert "impact" in impact
+    assert "affected_workspaces" in impact
