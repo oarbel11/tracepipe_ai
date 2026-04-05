@@ -1,0 +1,44 @@
+policies:
+  - name: schema_stability
+    type: schema_drift
+    severity: high
+    scope:
+      - "*.gold.*"
+      - "*.silver.*"
+    description: "Detect unexpected schema changes in production tables"
+  
+  - name: data_freshness_critical
+    type: freshness
+    severity: critical
+    max_age_hours: 24
+    scope:
+      - "*.gold.*"
+    description: "Gold tables must be updated within 24 hours"
+  
+  - name: data_freshness_standard
+    type: freshness
+    severity: medium
+    max_age_hours: 48
+    scope:
+      - "*.silver.*"
+    description: "Silver tables should be updated within 48 hours"
+  
+  - name: pii_detection
+    type: pii_detection
+    severity: critical
+    patterns:
+      - "ssn|social_security"
+      - "credit_card|cc_number"
+      - "email|email_address"
+      - "phone|phone_number"
+    scope:
+      - "*"
+    description: "Detect potential PII in column names"
+  
+  - name: bronze_freshness
+    type: freshness
+    severity: low
+    max_age_hours: 72
+    scope:
+      - "*.bronze.*"
+    description: "Bronze tables monitored for staleness"
