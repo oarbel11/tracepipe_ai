@@ -1,98 +1,75 @@
-"""Tests for long-term lineage archiving."""
-import json
-import tempfile
+import unittest
+import os
 from datetime import datetime, timedelta
+import tempfile
 from pathlib import Path
+import json
 
 from tracepipe_ai.lineage_archive import LineageArchive
 
 
-def test_archive_initialization():
-    """Test archive database initialization."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = f"{tmpdir}/test.duckdb"
-        archive = LineageArchive(db_path)
-        assert Path(db_path).exists()
-        archive.close()
+class TestLineageArchive(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.temp_dir, "test_archive.duckdb")
+        self.archive = LineageArchive(self.db_path)
 
+    def tearDown(self):
+        self.archive.close()
+        if os.path.exists(self.db_path):
+            os.remove(self.db_path)
+        os.rmdir(self.temp_dir)
 
-def test_archive_lineage_events():
-    """Test archiving lineage events."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        archive = LineageArchive(f"{tmpdir}/test.duckdb")
-        
-        events = [
-            {
-                'event_time': datetime.now(),
-                'source_table': 'catalog.schema.table1',
-                'target_table': 'catalog.schema.table2',
-                'operation': 'INSERT',
-                'metadata': {'user': 'test_user'}
-            },
-            {
-                'event_time': datetime.now() - timedelta(days=30),
-                'source_table': 'catalog.schema.table3',
-                'target_table': 'catalog.schema.table4',
-                'operation': 'UPDATE',
-                'metadata': {'query_id': 'q123'}
-            }
-        ]
-        
-        count = archive.archive_lineage(events)
-        assert count == 2
-        archive.close()
+    def test_archive_lineage(self):
+        lineage_data = {
+            "id": "test_table_001",
+            "entity_type": "table",
+            "entity_name": "catalog.schema.test_table",
+            "upstream_entities": ["catalog.schema.source_table"],
+            "downstream_entities": ["catalog.schema.target_table"],
+            "metadata": {"owner": "test_user", "columns": ["col1", "col2"]},
+            "captured_at": datetime.now(),
+            "source": "databricks"
+        }
+        result = self.archive.archive_lineage(lineage_data)
+        self.assertTrue(result)
 
-
-def test_query_historical_lineage():
-    """Test querying historical lineage data."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        archive = LineageArchive(f"{tmpdir}/test.duckdb")
-        
+    def test_query_historical_lineage(self):
         now = datetime.now()
-        events = [
-            {
-                'event_time': now - timedelta(days=10),
-                'source_table': 'cat.sch.src',
-                'target_table': 'cat.sch.tgt',
-                'operation': 'INSERT',
-                'metadata': {}
-            }
-        ]
+        lineage_data = {
+            "id": "test_query_001",
+            "entity_type": "table",
+            "entity_name": "catalog.schema.query_table",
+            "upstream_entities": [],
+            "downstream_entities": [],
+            "metadata": {},
+            "captured_at": now,
+            "source": "databricks"
+        }
+        self.archive.archive_lineage(lineage_data)
         
-        archive.archive_lineage(events)
-        
-        results = archive.query_historical(
-            (now - timedelta(days=30)).isoformat(),
-            now.isoformat()
-        )
-        
-        assert len(results) == 1
-        assert results[0]['source_table'] == 'cat.sch.src'
-        archive.close()
+        results = self.archive.query_historical_lineage("catalog.schema.query_table")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["entity_name"], "catalog.schema.query_table")
 
-
-def test_query_with_table_filter():
-    """Test querying with table name filter."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        archive = LineageArchive(f"{tmpdir}/test.duckdb")
-        
+    def test_query_with_date_range(self):
         now = datetime.now()
-        events = [
-            {'event_time': now, 'source_table': 'cat.sch.customers',
-             'target_table': 'cat.sch.report', 'operation': 'INSERT',
-             'metadata': {}},
-            {'event_time': now, 'source_table': 'cat.sch.orders',
-             'target_table': 'cat.sch.summary', 'operation': 'INSERT',
-             'metadata': {}}
-        ]
+        past = now - timedelta(days=30)
+        lineage_data = {
+            "id": "test_range_001",
+            "entity_type": "table",
+            "entity_name": "catalog.schema.range_table",
+            "upstream_entities": [],
+            "downstream_entities": [],
+            "metadata": {},
+            "captured_at": past,
+            "source": "databricks"
+        }
+        self.archive.archive_lineage(lineage_data)
         
-        archive.archive_lineage(events)
-        results = archive.query_historical(
-            (now - timedelta(days=1)).isoformat(),
-            (now + timedelta(days=1)).isoformat(),
-            'customers'
+        results = self.archive.query_historical_lineage(
+            "catalog.schema.range_table",
+            start_date=past - timedelta(days=1),
+            end_date=now
         )
-        
-        assert len(results) == 1
-        assert 'customers' in results[0]['source_table']
-        archive.close()
+        self.assertEqual(len(results), 1)

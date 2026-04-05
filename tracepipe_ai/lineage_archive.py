@@ -1,73 +1,80 @@
-"""Long-term lineage archiving module for Databricks Unity Catalog."""
 import json
+from datetime import datetime, timedelta
 import duckdb
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 
 class LineageArchive:
-    """Manages long-term archival of Databricks lineage metadata."""
-
-    def __init__(self, db_path: str = "data/lineage_archive.duckdb"):
+    def __init__(self, db_path: str = "lineage_archive.duckdb"):
         self.db_path = db_path
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = duckdb.connect(db_path)
-        self._init_schema()
+        self._initialize_schema()
 
-    def _init_schema(self):
-        """Initialize archive database schema."""
+    def _initialize_schema(self):
         self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS lineage_events (
-                id INTEGER PRIMARY KEY,
-                event_time TIMESTAMP,
-                source_table VARCHAR,
-                target_table VARCHAR,
-                operation VARCHAR,
+            CREATE TABLE IF NOT EXISTS lineage_metadata (
+                id VARCHAR PRIMARY KEY,
+                entity_type VARCHAR,
+                entity_name VARCHAR,
+                upstream_entities JSON,
+                downstream_entities JSON,
                 metadata JSON,
-                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                captured_at TIMESTAMP,
+                source VARCHAR
             )
         """)
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_event_time 
-            ON lineage_events(event_time)
+            CREATE INDEX IF NOT EXISTS idx_entity_name 
+            ON lineage_metadata(entity_name)
         """)
         self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_source 
-            ON lineage_events(source_table)
+            CREATE INDEX IF NOT EXISTS idx_captured_at 
+            ON lineage_metadata(captured_at)
         """)
 
-    def archive_lineage(self, lineage_data: List[Dict[str, Any]]) -> int:
-        """Archive lineage events to long-term storage."""
-        count = 0
-        for event in lineage_data:
+    def archive_lineage(self, lineage_data: Dict[str, Any]) -> bool:
+        try:
+            entity_id = lineage_data.get("id", f"{lineage_data['entity_name']}_{datetime.now().isoformat()}")
             self.conn.execute("""
-                INSERT INTO lineage_events 
-                (event_time, source_table, target_table, operation, metadata)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO lineage_metadata 
+                (id, entity_type, entity_name, upstream_entities, 
+                 downstream_entities, metadata, captured_at, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, [
-                event.get('event_time', datetime.now()),
-                event.get('source_table', ''),
-                event.get('target_table', ''),
-                event.get('operation', 'unknown'),
-                json.dumps(event.get('metadata', {}))
+                entity_id,
+                lineage_data.get("entity_type"),
+                lineage_data.get("entity_name"),
+                json.dumps(lineage_data.get("upstream_entities", [])),
+                json.dumps(lineage_data.get("downstream_entities", [])),
+                json.dumps(lineage_data.get("metadata", {})),
+                lineage_data.get("captured_at", datetime.now()),
+                lineage_data.get("source", "databricks")
             ])
-            count += 1
-        return count
+            return True
+        except Exception as e:
+            print(f"Error archiving lineage: {e}")
+            return False
 
-    def query_historical(self, start_date: str, end_date: str,
-                        table_filter: Optional[str] = None) -> List[Dict]:
-        """Query historical lineage within date range."""
-        query = "SELECT * FROM lineage_events WHERE event_time BETWEEN ? AND ?"
-        params = [start_date, end_date]
-        if table_filter:
-            query += " AND (source_table LIKE ? OR target_table LIKE ?)"
-            params.extend([f"%{table_filter}%", f"%{table_filter}%"])
+    def query_historical_lineage(self, entity_name: str, 
+                                  start_date: Optional[datetime] = None,
+                                  end_date: Optional[datetime] = None) -> List[Dict]:
+        query = "SELECT * FROM lineage_metadata WHERE entity_name = ?"
+        params = [entity_name]
+        
+        if start_date:
+            query += " AND captured_at >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND captured_at <= ?"
+            params.append(end_date)
+        
+        query += " ORDER BY captured_at DESC"
         result = self.conn.execute(query, params).fetchall()
-        columns = ['id', 'event_time', 'source_table', 'target_table',
-                   'operation', 'metadata', 'archived_at']
-        return [dict(zip(columns, row)) for row in result]
+        return [dict(zip(["id", "entity_type", "entity_name", "upstream_entities",
+                          "downstream_entities", "metadata", "captured_at", "source"], row)) 
+                for row in result]
 
     def close(self):
-        """Close database connection."""
-        self.conn.close()
+        if self.conn:
+            self.conn.close()
