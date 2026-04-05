@@ -1,8 +1,4 @@
-duckdb
-pandas
-mcp
-gitpython
-networkx
-databricks-sql-connector
-sqlparse
-pyyaml
+databricks-sdk>=0.20.0
+PyYAML>=6.0
+requests>=2.31.0
+networkx>=3.0
