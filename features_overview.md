@@ -98,3 +98,55 @@ Total impacted: 3 table(s)
 ```
 
 Risk levels: 🟢 GREEN (no downstream) · 🟡 YELLOW (1–4 tables) · 🔴 RED (5+ tables)
+
+---
+
+## 📅 2026-04-06
+
+### 🔗 Feature #20 — Business Glossary & Semantic Lineage Integration
+
+**What it is & why it matters:**
+Imagine you have a library where books are organized by complicated codes that only librarians understand. This feature is like adding simple, friendly labels that anyone can read - like 'Adventure Stories' or 'Science Books' - so regular people can find what they need without knowing the library codes. It helps business people understand technical data by connecting confusing database names to familiar business words they use every day, making it easier to find data and understand how changes might affect their work.
+
+**Tested on real data (companies_data catalog):**
+```
+Query ran OK but returned 0 rows.
+SQL: SELECT table_catalog, table_schema, table_name, comment FROM companies_data.information_schema.tables WHERE table_schema = 'corporate' LIMIT 5
+```
+
+**How to use it:**
+
+Step 1: Import and initialize the semantic mapper:
+python
+from scripts.peer_review.semantic_mapper import SemanticMapper
+mapper = SemanticMapper()
+
+
+Step 2: Define business terms in your glossary:
+python
+mapper.add_business_term(
+    term_id='revenue',
+    name='Annual Revenue',
+    definition='Total income generated from sales',
+    synonyms=['sales', 'income'],
+    owners=['finance_team']
+)
+
+
+Step 3: Link terms to technical assets:
+python
+mapper.link_term_to_asset(
+    term_id='revenue',
+    asset_type='column',
+    asset_id='companies_data.corporate.companies.revenue'
+)
+
+
+Step 4: Query semantic lineage:
+python
+results = mapper.search_by_business_term('revenue')
+for asset in results:
+    print(f"{asset['name']}: {asset['path']}")
+
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/39)
