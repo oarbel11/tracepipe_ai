@@ -98,3 +98,18 @@ Total impacted: 3 table(s)
 ```
 
 Risk levels: 🟢 GREEN (no downstream) · 🟡 YELLOW (1–4 tables) · 🔴 RED (5+ tables)
+
+---
+
+## 📅 2026-04-12
+
+### 🔗 Feature #31 — Proactive Lineage-Driven Impact Analysis & Data Reliability
+
+**What it is & why it matters:**
+Databricks Unity Catalog users experience challenges with lost lineage for renamed objects and inconsistencies where lineage information is reportedly overwritten or partially lost after subsequent job runs, hindering reliable impact analysis and debugging. This Tracepipe AI feature will introduce a robust 'Impact Analysis Dashboard' with versioned lineage, ensuring persistent tracking even for renamed objects. It will automatically detect upstream schema changes or data quality anomalies and leverage the complete lineage graph to proactively identify and alert all affected downstream data assets and stakeholders, transforming reactive troubleshooting into proactive data governance and improving overall data reliability.
+
+**How to use it:**
+
+See `tests/test_impact_analysis.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/41)

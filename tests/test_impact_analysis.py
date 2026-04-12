@@ -1,82 +1,76 @@
-"""Test interactive impact analysis."""
-import json
-from scripts.peer_review.impact_analyzer import InteractiveImpactAnalyzer
+import pytest
+from scripts.impact_analysis import ImpactAnalyzer, Alert, LineageVersion
+from scripts.anomaly_detector import AnomalyDetector
+from scripts.impact_dashboard import ImpactDashboard
 
+def test_track_lineage():
+    analyzer = ImpactAnalyzer()
+    schema = {"col1": "string", "col2": "int"}
+    analyzer.track_lineage("table_a", schema, [], ["table_b"])
+    assert "table_a" in analyzer.lineage_versions
+    assert len(analyzer.lineage_versions["table_a"]) == 1
+    assert analyzer.lineage_versions["table_a"][0].version == 1
 
-def test_impact_analyzer_initialization():
-    """Test analyzer can be initialized."""
-    analyzer = InteractiveImpactAnalyzer()
-    assert analyzer is not None
-    assert analyzer.lineage_graph == {}
-    assert analyzer.asset_metadata == {}
+def test_handle_rename():
+    analyzer = ImpactAnalyzer()
+    schema = {"col1": "string"}
+    analyzer.track_lineage("old_table", schema, [], [])
+    analyzer.handle_rename("old_table", "new_table")
+    assert "new_table" in analyzer.lineage_versions
+    assert analyzer.lineage_versions["new_table"][0].asset_id == "new_table"
+    assert analyzer.rename_map["old_table"] == "new_table"
 
+def test_get_downstream_assets():
+    analyzer = ImpactAnalyzer()
+    analyzer.track_lineage("A", {}, [], ["B"])
+    analyzer.track_lineage("B", {}, ["A"], ["C"])
+    analyzer.track_lineage("C", {}, ["B"], [])
+    downstream = analyzer.get_downstream_assets("A")
+    assert "B" in downstream
+    assert "C" in downstream
 
-def test_load_lineage():
-    """Test loading lineage data."""
-    analyzer = InteractiveImpactAnalyzer()
-    lineage_data = {
-        "nodes": [
-            {"id": "table_a", "tags": ["PII"], "owner": "team1"},
-            {"id": "table_b", "tags": ["public"], "owner": "team2"},
-            {"id": "table_c", "tags": ["PII"], "owner": "team1"}
-        ],
-        "edges": [
-            {"source": "table_a", "target": "table_b"},
-            {"source": "table_b", "target": "table_c"}
-        ]
-    }
-    analyzer.load_lineage(lineage_data)
-    assert "table_a" in analyzer.lineage_graph
-    assert "table_b" in analyzer.lineage_graph["table_a"]
-    assert "table_a" in analyzer.asset_metadata
+def test_detect_schema_change():
+    analyzer = ImpactAnalyzer()
+    schema_v1 = {"col1": "string"}
+    schema_v2 = {"col1": "string", "col2": "int"}
+    analyzer.track_lineage("table_x", schema_v1, [], ["table_y"])
+    alert = analyzer.detect_schema_change("table_x", schema_v2)
+    assert alert is not None
+    assert alert.severity == "high"
+    assert "table_y" in alert.affected_assets
 
+def test_anomaly_detector():
+    detector = AnomalyDetector()
+    detector.set_baseline("table_a", {"row_count": 1000, "null_count": 5})
+    anomaly = detector.detect_data_quality_anomaly("table_a", {"row_count": 500, "null_count": 5})
+    assert anomaly is not None
+    assert anomaly.anomaly_type == "data_quality"
 
-def test_downstream_impact_analysis():
-    """Test analyzing downstream impact."""
-    analyzer = InteractiveImpactAnalyzer()
-    lineage_data = {
-        "nodes": [
-            {"id": "table_a", "tags": ["PII"]},
-            {"id": "table_b", "tags": ["public"]},
-            {"id": "table_c", "tags": ["PII"]}
-        ],
-        "edges": [
-            {"source": "table_a", "target": "table_b"},
-            {"source": "table_b", "target": "table_c"}
-        ]
-    }
-    analyzer.load_lineage(lineage_data)
-    result = analyzer.analyze_downstream_impact("table_a")
-    assert result["source_asset"] == "table_a"
-    assert result["total_impacted"] == 2
-    assert len(result["impacted_assets"]) == 2
+def test_impact_dashboard_summary():
+    dashboard = ImpactDashboard()
+    dashboard.track_asset("A", {"col": "string"}, [], ["B", "C"])
+    summary = dashboard.get_impact_summary("A")
+    assert summary["downstream_count"] == 2
+    assert "B" in summary["downstream_assets"]
 
+def test_impact_dashboard_alerts():
+    dashboard = ImpactDashboard()
+    dashboard.track_asset("T1", {"a": "int"}, [], ["T2"])
+    dashboard.check_schema_change("T1", {"a": "string"})
+    alerts = dashboard.get_alerts()
+    assert len(alerts) > 0
+    assert alerts[0]["severity"] == "high"
 
-def test_filtered_impact_analysis():
-    """Test impact analysis with filters."""
-    analyzer = InteractiveImpactAnalyzer()
-    lineage_data = {
-        "nodes": [
-            {"id": "table_a", "tags": ["source"]},
-            {"id": "table_b", "tags": ["PII"]},
-            {"id": "table_c", "tags": ["public"]}
-        ],
-        "edges": [
-            {"source": "table_a", "target": "table_b"},
-            {"source": "table_a", "target": "table_c"}
-        ]
-    }
-    analyzer.load_lineage(lineage_data)
-    result = analyzer.analyze_downstream_impact(
-        "table_a", filters={"tags": ["PII"]}
-    )
-    assert result["total_impacted"] == 1
-    assert result["impacted_assets"][0]["id"] == "table_b"
+def test_multiple_versions():
+    analyzer = ImpactAnalyzer()
+    analyzer.track_lineage("table", {"v": 1}, [], [])
+    analyzer.track_lineage("table", {"v": 2}, [], [])
+    assert len(analyzer.lineage_versions["table"]) == 2
+    assert analyzer.lineage_versions["table"][1].version == 2
 
-
-def test_nonexistent_asset():
-    """Test analyzing nonexistent asset."""
-    analyzer = InteractiveImpactAnalyzer()
-    result = analyzer.analyze_downstream_impact("nonexistent")
-    assert "error" in result
-    assert result["impacted_assets"] == []
+def test_no_schema_change_no_alert():
+    analyzer = ImpactAnalyzer()
+    schema = {"col": "int"}
+    analyzer.track_lineage("stable", schema, [], [])
+    alert = analyzer.detect_schema_change("stable", schema)
+    assert alert is None
