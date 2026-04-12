@@ -98,3 +98,18 @@ Total impacted: 3 table(s)
 ```
 
 Risk levels: 🟢 GREEN (no downstream) · 🟡 YELLOW (1–4 tables) · 🔴 RED (5+ tables)
+
+---
+
+## 📅 2026-04-12
+
+### 🔗 Feature #30 — Automated Cross-System Lineage Integration
+
+**What it is & why it matters:**
+Databricks Unity Catalog's lineage capabilities are strong within its own perimeter but fall short in providing a truly end-to-end view across diverse external data sources, ETL tools, and BI platforms, requiring significant manual effort via its 'Bring Your Own Lineage' (BYOL) feature. This feature for Tracepipe AI will provide automated, out-of-the-box connectors to popular external systems (e.g., Snowflake, Tableau, Kafka) to seamlessly ingest, stitch, and visualize a comprehensive column-level lineage graph that spans the entire data estate. This unified view, queryable through Tracepipe AI, will drastically reduce manual overhead and enhance data trust across hybrid environments.
+
+**How to use it:**
+
+See `tests/test_lineage_integration.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/40)
