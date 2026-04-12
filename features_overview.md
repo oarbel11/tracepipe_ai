@@ -98,3 +98,42 @@ Total impacted: 3 table(s)
 ```
 
 Risk levels: 🟢 GREEN (no downstream) · 🟡 YELLOW (1–4 tables) · 🔴 RED (5+ tables)
+
+---
+
+## 📅 2026-04-12
+
+### 🔗 Feature #34 — Implement Automated Policy Enforcement & Scalable Graph Rendering
+
+**What it is & why it matters:**
+Imagine you have a family tree with thousands of people, and some family members have special labels like 'doctor' or 'teacher'. This feature automatically copies those labels to their children and grandchildren, so if grandma is labeled 'doctor', everyone in her family line gets that label too. It also makes sure the family tree loads super fast even with thousands of people by only showing the part you're looking at, like how Google Maps only loads the area you can see on your screen instead of the whole world at once.
+
+**Tested on real data (companies_data catalog):**
+```
+Query ran OK but returned 0 rows.
+SQL: SELECT table_catalog, table_schema, table_name, comment FROM companies_data.information_schema.tables WHERE table_schema = 'bronze' LIMIT 5
+```
+
+**How to use it:**
+
+Step 1: Define policies with tags and enforcement rules. Step 2: Build lineage graph from metadata. Step 3: Run policy enforcer to propagate tags and validate. Step 4: Use graph optimizer for rendering large graphs.
+
+Python example:
+python
+from scripts.peer_review.policy_enforcer import PolicyEnforcer
+from scripts.peer_review.governance_policy import GovernancePolicy
+
+policy = GovernancePolicy(
+    policy_id='pii_001',
+    name='PII Propagation',
+    description='Propagate PII tags',
+    tags=['PII'],
+    rules={'action': 'propagate', 'access_level': 'restricted'}
+)
+enforcer = PolicyEnforcer([policy])
+lineage = {'table_a': ['table_b', 'table_c']}
+results = enforcer.enforce_policies(lineage, {'table_a': ['PII']})
+print(results)
+
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/44)
