@@ -1,70 +1,84 @@
 import pytest
 import sys
+from pathlib import Path
+import yaml
+import tempfile
 import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from scripts.lineage_integration import LineageEngine, SnowflakeConnector, TableauConnector
-import networkx as nx
+from scripts.lineage_integration import (
+    LineageEngine,
+    SnowflakeConnector,
+    TableauConnector,
+    LineageStitcher
+)
+
+
+@pytest.fixture
+def config_file():
+    """Create temporary config file"""
+    config = {
+        "lineage": {
+            "systems": {
+                "snowflake": {"enabled": True, "account": "test"},
+                "tableau": {"enabled": True, "server": "https://test.com"}
+            }
+        }
+    }
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
+        yaml.dump(config, f)
+        return f.name
+
 
 def test_snowflake_connector():
-    connector = SnowflakeConnector({'system': 'snowflake', 'host': 'test.snowflakecomputing.com'})
+    connector = SnowflakeConnector({"account": "test"})
     lineage = connector.extract_lineage()
-    assert len(lineage) > 0
-    assert lineage[0]['source'].startswith('snowflake')
-    schema = connector.get_schema('test_table')
-    assert isinstance(schema, list)
+    assert lineage["source"] == "snowflake"
+    assert len(lineage["nodes"]) > 0
+    assert "edges" in lineage
+
 
 def test_tableau_connector():
-    connector = TableauConnector({'system': 'tableau', 'server': 'tableau.test.com'})
+    connector = TableauConnector({"server": "https://test.com"})
     lineage = connector.extract_lineage()
-    assert len(lineage) > 0
-    assert 'dashboard' in lineage[0]['target']
+    assert lineage["source"] == "tableau"
+    assert "nodes" in lineage
 
-def test_lineage_engine_basic():
-    engine = LineageEngine()
-    assert isinstance(engine.graph, nx.DiGraph)
-    assert engine.graph.number_of_nodes() == 0
 
-def test_add_connectors():
-    engine = LineageEngine()
-    engine.add_connector('snowflake', {'host': 'test.snowflakecomputing.com'})
-    engine.add_connector('tableau', {'server': 'tableau.test.com'})
-    assert 'snowflake' in engine.connectors
-    assert 'tableau' in engine.connectors
+def test_lineage_stitcher():
+    stitcher = LineageStitcher()
+    lineage1 = {
+        "nodes": [{"id": "n1", "type": "table"}],
+        "edges": [{"from": "n1", "to": "n2"}]
+    }
+    lineage2 = {
+        "nodes": [{"id": "n2", "type": "table"}],
+        "edges": []
+    }
+    stitcher.add_lineage(lineage1)
+    stitcher.add_lineage(lineage2)
+    graph = stitcher.get_graph()
+    assert len(graph["nodes"]) == 2
+    assert len(graph["edges"]) == 1
 
-def test_build_unified_lineage():
-    engine = LineageEngine()
-    engine.add_connector('snowflake', {'host': 'test.snowflakecomputing.com'})
-    engine.add_connector('tableau', {'server': 'tableau.test.com'})
-    graph = engine.build_unified_lineage()
-    assert graph.number_of_nodes() > 0
-    assert graph.number_of_edges() > 0
 
-def test_query_lineage_downstream():
-    engine = LineageEngine()
-    engine.add_connector('snowflake', {'host': 'test.snowflakecomputing.com'})
-    engine.build_unified_lineage()
-    result = engine.query_lineage('snowflake.analytics.customers_clean', 'downstream')
-    assert 'dependencies' in result
-    assert isinstance(result['dependencies'], list)
+def test_lineage_engine(config_file):
+    engine = LineageEngine(config_file)
+    sf_connector = SnowflakeConnector({"account": "test"})
+    tb_connector = TableauConnector({"server": "https://test.com"})
+    engine.register_connector(sf_connector)
+    engine.register_connector(tb_connector)
+    engine.collect_lineage()
+    graph = engine.get_unified_graph()
+    assert len(graph["nodes"]) > 0
+    os.unlink(config_file)
 
-def test_query_lineage_upstream():
-    engine = LineageEngine()
-    engine.add_connector('snowflake', {'host': 'test.snowflakecomputing.com'})
-    engine.build_unified_lineage()
-    result = engine.query_lineage('databricks.corporate.companies', 'upstream')
-    assert result['direction'] == 'upstream'
 
-def test_column_level_lineage():
-    engine = LineageEngine()
-    engine.add_connector('snowflake', {'host': 'test.snowflakecomputing.com'})
-    engine.build_unified_lineage()
-    assert engine.column_graph.number_of_edges() > 0
-
-def test_query_column_lineage():
-    engine = LineageEngine()
-    engine.add_connector('snowflake', {'host': 'test.snowflakecomputing.com'})
-    engine.build_unified_lineage()
-    result = engine.query_column_lineage('snowflake.analytics.customers_clean.name')
-    assert 'upstream' in result
-    assert 'downstream' in result
+def test_query_lineage(config_file):
+    engine = LineageEngine(config_file)
+    sf_connector = SnowflakeConnector({"account": "test"})
+    engine.register_connector(sf_connector)
+    engine.collect_lineage()
+    node = engine.query_lineage("sf.db.table1")
+    assert node is not None
+    assert node["id"] == "sf.db.table1"
+    os.unlink(config_file)

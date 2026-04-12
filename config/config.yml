@@ -1,28 +1,23 @@
-databricks:
-  host: ${DATABRICKS_HOST}
-  token: ${DATABRICKS_TOKEN}
-  catalog: companies_data
-  schema: corporate
-
-lineage_connectors:
-  - type: snowflake
-    enabled: false
-    host: account.snowflakecomputing.com
-    database: analytics_db
-    warehouse: compute_wh
-
-  - type: tableau
-    enabled: false
-    server: tableau.company.com
-    site: default
-
-  - type: kafka
-    enabled: false
-    bootstrap_servers: kafka.company.com:9092
-    schema_registry: http://schema-registry.company.com:8081
-
-lineage_settings:
-  auto_refresh_interval_hours: 24
-  include_column_lineage: true
-  max_depth: 10
-  cache_enabled: true
+lineage:
+  systems:
+    snowflake:
+      enabled: true
+      account: "example_account"
+      user: "example_user"
+    tableau:
+      enabled: true
+      server: "https://tableau.example.com"
+      site: "default"
+    kafka:
+      enabled: false
+      bootstrap_servers: "localhost:9092"
+  stitching:
+    auto_discover: true
+    column_level: true
+cohere:
+  api_key: "your-api-key-here"
+  model: "command-r-plus-08-2024"
+rag:
+  chunk_size: 512
+  overlap: 50
+  top_k: 5

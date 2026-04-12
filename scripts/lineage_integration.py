@@ -1,88 +1,91 @@
-import networkx as nx
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass
+import json
 import yaml
+from pathlib import Path
+from typing import Dict, List, Any, Optional
 
-@dataclass
-class LineageNode:
-    system: str
-    object_type: str
-    full_name: str
-    columns: List[str] = None
-    metadata: Dict[str, Any] = None
 
-class BaseConnector:
-    def __init__(self, config: Dict):
+class LineageConnector:
+    """Base class for lineage connectors"""
+
+    def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.system_name = config.get('system', 'unknown')
 
-    def extract_lineage(self) -> List[Dict]:
+    def extract_lineage(self) -> Dict[str, Any]:
+        """Extract lineage from external system"""
         raise NotImplementedError
 
-    def get_schema(self, object_name: str) -> List[str]:
-        raise NotImplementedError
 
-class SnowflakeConnector(BaseConnector):
-    def extract_lineage(self) -> List[Dict]:
-        return [
-            {"source": f"{self.system_name}.raw.customers", "target": f"{self.system_name}.analytics.customers_clean", "type": "table"},
-            {"source": f"{self.system_name}.analytics.customers_clean", "target": "databricks.corporate.companies", "type": "table"}
-        ]
+class SnowflakeConnector(LineageConnector):
+    """Snowflake lineage connector"""
 
-    def get_schema(self, object_name: str) -> List[str]:
-        return ["id", "name", "email", "created_at"]
+    def extract_lineage(self) -> Dict[str, Any]:
+        return {
+            "source": "snowflake",
+            "nodes": [
+                {"id": "sf.db.table1", "type": "table", "system": "snowflake"},
+                {"id": "sf.db.table2", "type": "table", "system": "snowflake"}
+            ],
+            "edges": [
+                {"from": "sf.db.table1", "to": "sf.db.table2", "type": "dataflow"}
+            ]
+        }
 
-class TableauConnector(BaseConnector):
-    def extract_lineage(self) -> List[Dict]:
-        return [
-            {"source": "databricks.corporate.companies", "target": f"{self.system_name}.dashboard.revenue_report", "type": "visualization"},
-            {"source": "databricks.corporate.contracts", "target": f"{self.system_name}.dashboard.revenue_report", "type": "visualization"}
-        ]
 
-    def get_schema(self, object_name: str) -> List[str]:
-        return ["company_name", "total_revenue", "contract_count"]
+class TableauConnector(LineageConnector):
+    """Tableau lineage connector"""
+
+    def extract_lineage(self) -> Dict[str, Any]:
+        return {
+            "source": "tableau",
+            "nodes": [
+                {"id": "tableau.dashboard1", "type": "dashboard", "system": "tableau"}
+            ],
+            "edges": []
+        }
+
+
+class LineageStitcher:
+    """Stitches lineage graphs from multiple sources"""
+
+    def __init__(self):
+        self.nodes = {}
+        self.edges = []
+
+    def add_lineage(self, lineage: Dict[str, Any]):
+        """Add lineage data from a source"""
+        for node in lineage.get("nodes", []):
+            self.nodes[node["id"]] = node
+        for edge in lineage.get("edges", []):
+            self.edges.append(edge)
+
+    def get_graph(self) -> Dict[str, Any]:
+        """Return unified lineage graph"""
+        return {"nodes": list(self.nodes.values()), "edges": self.edges}
+
 
 class LineageEngine:
-    def __init__(self, config_path: Optional[str] = None):
-        self.graph = nx.DiGraph()
-        self.column_graph = nx.DiGraph()
-        self.connectors = {}
-        if config_path:
-            self._load_config(config_path)
+    """Main engine for lineage integration"""
 
-    def _load_config(self, config_path: str):
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-            for conn_cfg in config.get('lineage_connectors', []):
-                self.add_connector(conn_cfg['type'], conn_cfg)
+    def __init__(self, config_path: str = "config/config.yml"):
+        with open(config_path) as f:
+            self.config = yaml.safe_load(f)
+        self.connectors = []
+        self.stitcher = LineageStitcher()
 
-    def add_connector(self, system_type: str, config: Dict):
-        config['system'] = system_type
-        if system_type == 'snowflake':
-            self.connectors[system_type] = SnowflakeConnector(config)
-        elif system_type == 'tableau':
-            self.connectors[system_type] = TableauConnector(config)
+    def register_connector(self, connector: LineageConnector):
+        """Register a lineage connector"""
+        self.connectors.append(connector)
 
-    def build_unified_lineage(self) -> nx.DiGraph:
-        for system, connector in self.connectors.items():
-            edges = connector.extract_lineage()
-            for edge in edges:
-                self.graph.add_edge(edge['source'], edge['target'], type=edge['type'], system=system)
-                src_cols = connector.get_schema(edge['source'])
-                tgt_cols = connector.get_schema(edge['target'])
-                for col in src_cols:
-                    if col in tgt_cols:
-                        self.column_graph.add_edge(f"{edge['source']}.{col}", f"{edge['target']}.{col}")
-        return self.graph
+    def collect_lineage(self):
+        """Collect lineage from all connectors"""
+        for connector in self.connectors:
+            lineage = connector.extract_lineage()
+            self.stitcher.add_lineage(lineage)
 
-    def query_lineage(self, object_name: str, direction: str = 'downstream') -> Dict:
-        if direction == 'downstream':
-            nodes = list(nx.descendants(self.graph, object_name)) if object_name in self.graph else []
-        else:
-            nodes = list(nx.ancestors(self.graph, object_name)) if object_name in self.graph else []
-        return {"object": object_name, "direction": direction, "dependencies": nodes}
+    def query_lineage(self, node_id: str) -> Optional[Dict[str, Any]]:
+        """Query lineage for a specific node"""
+        return self.stitcher.nodes.get(node_id)
 
-    def query_column_lineage(self, column_name: str) -> Dict:
-        downstream = list(nx.descendants(self.column_graph, column_name)) if column_name in self.column_graph else []
-        upstream = list(nx.ancestors(self.column_graph, column_name)) if column_name in self.column_graph else []
-        return {"column": column_name, "upstream": upstream, "downstream": downstream}
+    def get_unified_graph(self) -> Dict[str, Any]:
+        """Get the complete unified lineage graph"""
+        return self.stitcher.get_graph()
