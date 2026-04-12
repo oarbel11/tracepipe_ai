@@ -98,3 +98,18 @@ Total impacted: 3 table(s)
 ```
 
 Risk levels: 🟢 GREEN (no downstream) · 🟡 YELLOW (1–4 tables) · 🔴 RED (5+ tables)
+
+---
+
+## 📅 2026-04-12
+
+### 🔗 Feature #32 — Enhance Spark UDF and Complex Transformation Parsing
+
+**What it is & why it matters:**
+Improve the Spark analysis engine to reliably extract column-level lineage even through Python/Scala UDFs and complex DataFrame operations that currently limit native Unity Catalog lineage. This will make the lineage significantly more accurate and comprehensive for advanced Databricks users, addressing a critical gap where current solutions often fall short.
+
+**How to use it:**
+
+See `tests/test_spark_lineage.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
