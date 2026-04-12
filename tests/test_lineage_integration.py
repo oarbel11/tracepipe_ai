@@ -1,84 +1,69 @@
-import pytest
-import sys
-from pathlib import Path
-import yaml
-import tempfile
-import os
-
-from scripts.lineage_integration import (
-    LineageEngine,
-    SnowflakeConnector,
-    TableauConnector,
-    LineageStitcher
+import unittest
+import json
+from tracepipe_ai.lineage_integration import (
+    SnowflakeConnector, TableauConnector, LineageNode, LineageEdge
 )
+from tracepipe_ai.lineage_stitcher import LineageStitcher
 
 
-@pytest.fixture
-def config_file():
-    """Create temporary config file"""
-    config = {
-        "lineage": {
-            "systems": {
-                "snowflake": {"enabled": True, "account": "test"},
-                "tableau": {"enabled": True, "server": "https://test.com"}
-            }
+class TestLineageIntegration(unittest.TestCase):
+    def test_snowflake_connector(self):
+        config = {
+            "system": "snowflake",
+            "tables": [{"name": "customers", "schema": "public"}]
         }
-    }
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
-        yaml.dump(config, f)
-        return f.name
+        connector = SnowflakeConnector(config)
+        graph = connector.extract_lineage()
+        self.assertEqual(len(graph.nodes), 1)
+        self.assertIn("snowflake:customers", graph.nodes)
 
+    def test_tableau_connector(self):
+        config = {
+            "system": "tableau",
+            "workbooks": [{"name": "sales_dashboard"}]
+        }
+        connector = TableauConnector(config)
+        graph = connector.extract_lineage()
+        self.assertEqual(len(graph.nodes), 1)
+        self.assertIn("tableau:sales_dashboard", graph.nodes)
 
-def test_snowflake_connector():
-    connector = SnowflakeConnector({"account": "test"})
-    lineage = connector.extract_lineage()
-    assert lineage["source"] == "snowflake"
-    assert len(lineage["nodes"]) > 0
-    assert "edges" in lineage
+    def test_lineage_stitcher(self):
+        sf_config = {
+            "system": "snowflake",
+            "tables": [{"name": "customers", "schema": "public"}]
+        }
+        tb_config = {
+            "system": "tableau",
+            "workbooks": [{"name": "sales_dashboard"}]
+        }
+        sf_connector = SnowflakeConnector(sf_config)
+        tb_connector = TableauConnector(tb_config)
+        sf_graph = sf_connector.extract_lineage()
+        tb_graph = tb_connector.extract_lineage()
 
+        stitcher = LineageStitcher()
+        mappings = [{
+            "source": "snowflake:customers",
+            "target": "tableau:sales_dashboard"
+        }]
+        unified = stitcher.stitch([sf_graph, tb_graph], mappings)
+        self.assertEqual(len(unified.nodes), 2)
+        self.assertEqual(len(unified.edges), 1)
 
-def test_tableau_connector():
-    connector = TableauConnector({"server": "https://test.com"})
-    lineage = connector.extract_lineage()
-    assert lineage["source"] == "tableau"
-    assert "nodes" in lineage
+    def test_query_lineage(self):
+        stitcher = LineageStitcher()
+        node = LineageNode("test:table1", "test", "table", "table1")
+        stitcher.unified_graph.add_node(node)
+        result = stitcher.query_lineage({"entity_id": "test:table1"})
+        self.assertEqual(result["entity_id"], "test:table1")
+        self.assertEqual(result["system"], "test")
 
-
-def test_lineage_stitcher():
-    stitcher = LineageStitcher()
-    lineage1 = {
-        "nodes": [{"id": "n1", "type": "table"}],
-        "edges": [{"from": "n1", "to": "n2"}]
-    }
-    lineage2 = {
-        "nodes": [{"id": "n2", "type": "table"}],
-        "edges": []
-    }
-    stitcher.add_lineage(lineage1)
-    stitcher.add_lineage(lineage2)
-    graph = stitcher.get_graph()
-    assert len(graph["nodes"]) == 2
-    assert len(graph["edges"]) == 1
-
-
-def test_lineage_engine(config_file):
-    engine = LineageEngine(config_file)
-    sf_connector = SnowflakeConnector({"account": "test"})
-    tb_connector = TableauConnector({"server": "https://test.com"})
-    engine.register_connector(sf_connector)
-    engine.register_connector(tb_connector)
-    engine.collect_lineage()
-    graph = engine.get_unified_graph()
-    assert len(graph["nodes"]) > 0
-    os.unlink(config_file)
-
-
-def test_query_lineage(config_file):
-    engine = LineageEngine(config_file)
-    sf_connector = SnowflakeConnector({"account": "test"})
-    engine.register_connector(sf_connector)
-    engine.collect_lineage()
-    node = engine.query_lineage("sf.db.table1")
-    assert node is not None
-    assert node["id"] == "sf.db.table1"
-    os.unlink(config_file)
+    def test_column_lineage(self):
+        stitcher = LineageStitcher()
+        n1 = LineageNode("s:col1", "s", "column", "col1")
+        n2 = LineageNode("s:col2", "s", "column", "col2")
+        stitcher.unified_graph.add_node(n1)
+        stitcher.unified_graph.add_node(n2)
+        stitcher.unified_graph.add_edge(LineageEdge("s:col1", "s:col2"))
+        lineage = stitcher.get_column_lineage("s:col2")
+        self.assertIn("s:col1", lineage["upstream"])
