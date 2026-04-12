@@ -1,93 +1,48 @@
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass
-import time
+from typing import Dict, List, Optional
+from datetime import datetime
 
-
-@dataclass
-class SchemaSnapshot:
-    asset_name: str
-    timestamp: float
-    columns: Dict[str, str]
-    row_count: Optional[int] = None
-    metadata: Dict[str, Any] = None
-
+class Anomaly:
+    def __init__(self, asset_id: str, anomaly_type: str, details: Dict):
+        self.asset_id = asset_id
+        self.anomaly_type = anomaly_type
+        self.details = details
+        self.timestamp = datetime.utcnow().isoformat()
 
 class AnomalyDetector:
-    def __init__(self, impact_analyzer=None):
-        self.impact_analyzer = impact_analyzer
-        self.schema_history: Dict[str, List[SchemaSnapshot]] = {}
-        self.quality_thresholds = {
-            "null_rate": 0.1,
-            "row_count_change": 0.5,
-            "column_cardinality_change": 0.3
-        }
+    def __init__(self):
+        self.anomalies: List[Anomaly] = []
+        self.baseline_stats: Dict[str, Dict] = {}
 
-    def capture_schema(self, asset_name: str, columns: Dict[str, str],
-                       row_count: Optional[int] = None) -> SchemaSnapshot:
-        snapshot = SchemaSnapshot(
-            asset_name=asset_name,
-            timestamp=time.time(),
-            columns=columns,
-            row_count=row_count
-        )
-        if asset_name not in self.schema_history:
-            self.schema_history[asset_name] = []
-        self.schema_history[asset_name].append(snapshot)
-        return snapshot
+    def set_baseline(self, asset_id: str, stats: Dict):
+        self.baseline_stats[asset_id] = stats
 
-    def detect_schema_drift(self, asset_name: str) -> Optional[Dict]:
-        if asset_name not in self.schema_history:
-            return None
-        history = self.schema_history[asset_name]
-        if len(history) < 2:
+    def detect_data_quality_anomaly(self, asset_id: str, current_stats: Dict) -> Optional[Anomaly]:
+        if asset_id not in self.baseline_stats:
             return None
         
-        current = history[-1]
-        previous = history[-2]
+        baseline = self.baseline_stats[asset_id]
+        anomalies_found = []
         
-        added_cols = set(current.columns.keys()) - set(previous.columns.keys())
-        removed_cols = set(previous.columns.keys()) - set(current.columns.keys())
-        type_changes = {col: (previous.columns[col], current.columns[col])
-                       for col in current.columns
-                       if col in previous.columns and
-                       current.columns[col] != previous.columns[col]}
+        for metric, baseline_value in baseline.items():
+            current_value = current_stats.get(metric)
+            if current_value is None:
+                continue
+            
+            if isinstance(baseline_value, (int, float)) and isinstance(current_value, (int, float)):
+                if baseline_value > 0:
+                    change_pct = abs(current_value - baseline_value) / baseline_value
+                    if change_pct > 0.2:
+                        anomalies_found.append(f"{metric}: {change_pct*100:.1f}% change")
         
-        if added_cols or removed_cols or type_changes:
-            drift = {
-                "asset": asset_name,
-                "added_columns": list(added_cols),
-                "removed_columns": list(removed_cols),
-                "type_changes": type_changes,
-                "timestamp": current.timestamp
-            }
-            if self.impact_analyzer:
-                msg = f"Schema drift: +{len(added_cols)} -{len(removed_cols)} cols"
-                self.impact_analyzer.create_alert(
-                    asset_name, "schema_drift", msg, "high"
-                )
-            return drift
+        if anomalies_found:
+            anomaly = Anomaly(asset_id, "data_quality", {
+                "baseline": baseline,
+                "current": current_stats,
+                "issues": anomalies_found
+            })
+            self.anomalies.append(anomaly)
+            return anomaly
         return None
 
-    def detect_data_quality_anomaly(self, asset_name: str,
-                                   metrics: Dict[str, float]) -> Optional[Dict]:
-        anomalies = []
-        if "null_rate" in metrics:
-            if metrics["null_rate"] > self.quality_thresholds["null_rate"]:
-                anomalies.append(f"High null rate: {metrics['null_rate']:.2%}")
-        
-        if "row_count" in metrics and asset_name in self.schema_history:
-            history = self.schema_history[asset_name]
-            if history and history[-1].row_count:
-                prev_count = history[-1].row_count
-                curr_count = metrics["row_count"]
-                change = abs(curr_count - prev_count) / max(prev_count, 1)
-                if change > self.quality_thresholds["row_count_change"]:
-                    anomalies.append(f"Row count change: {change:.2%}")
-        
-        if anomalies and self.impact_analyzer:
-            msg = "; ".join(anomalies)
-            self.impact_analyzer.create_alert(
-                asset_name, "data_quality", msg, "medium"
-            )
-            return {"asset": asset_name, "anomalies": anomalies}
-        return None
+    def get_anomalies(self) -> List[Anomaly]:
+        return self.anomalies

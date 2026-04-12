@@ -1,107 +1,76 @@
 import pytest
-import time
-from scripts.impact_analysis import ImpactAnalyzer, Alert
+from scripts.impact_analysis import ImpactAnalyzer, Alert, LineageVersion
 from scripts.anomaly_detector import AnomalyDetector
 from scripts.impact_dashboard import ImpactDashboard
 
-
-def test_basic_lineage_tracking():
+def test_track_lineage():
     analyzer = ImpactAnalyzer()
-    analyzer.track_lineage("table_a", [])
-    analyzer.track_lineage("table_b", ["table_a"])
-    analyzer.track_lineage("table_c", ["table_b"])
-    
-    impact = analyzer.get_downstream_impact("table_a")
-    assert "table_b" in impact["affected_assets"]
-    assert "table_c" in impact["affected_assets"]
-    assert impact["depth"] == 2
+    schema = {"col1": "string", "col2": "int"}
+    analyzer.track_lineage("table_a", schema, [], ["table_b"])
+    assert "table_a" in analyzer.lineage_versions
+    assert len(analyzer.lineage_versions["table_a"]) == 1
+    assert analyzer.lineage_versions["table_a"][0].version == 1
 
-
-def test_rename_preserves_lineage():
+def test_handle_rename():
     analyzer = ImpactAnalyzer()
-    analyzer.track_lineage("old_table", [])
-    analyzer.track_lineage("downstream_table", ["old_table"])
-    
+    schema = {"col1": "string"}
+    analyzer.track_lineage("old_table", schema, [], [])
     analyzer.handle_rename("old_table", "new_table")
-    
-    impact = analyzer.get_downstream_impact("new_table")
-    assert "downstream_table" in impact["affected_assets"]
-    
-    asset_id = analyzer.name_mapping["new_table"]
-    asset = analyzer.assets[asset_id]
-    assert asset.current_name == "new_table"
-    assert "old_table" in asset.previous_names
+    assert "new_table" in analyzer.lineage_versions
+    assert analyzer.lineage_versions["new_table"][0].asset_id == "new_table"
+    assert analyzer.rename_map["old_table"] == "new_table"
 
-
-def test_versioned_lineage():
+def test_get_downstream_assets():
     analyzer = ImpactAnalyzer()
-    analyzer.track_lineage("table_x", ["source_1"])
-    time.sleep(0.01)
-    analyzer.track_lineage("table_x", ["source_1", "source_2"])
-    
-    asset_id = analyzer.name_mapping["table_x"]
-    asset = analyzer.assets[asset_id]
-    assert len(asset.versions) == 2
-    assert asset.versions[0].version == 1
-    assert len(asset.versions[1].upstream) == 2
+    analyzer.track_lineage("A", {}, [], ["B"])
+    analyzer.track_lineage("B", {}, ["A"], ["C"])
+    analyzer.track_lineage("C", {}, ["B"], [])
+    downstream = analyzer.get_downstream_assets("A")
+    assert "B" in downstream
+    assert "C" in downstream
 
-
-def test_alert_creation_with_impact():
+def test_detect_schema_change():
     analyzer = ImpactAnalyzer()
-    analyzer.track_lineage("source", [])
-    analyzer.track_lineage("model", ["source"])
-    analyzer.track_lineage("dashboard", ["model"])
-    
-    alert = analyzer.create_alert("source", "schema_change",
-                                  "Column removed", "high")
+    schema_v1 = {"col1": "string"}
+    schema_v2 = {"col1": "string", "col2": "int"}
+    analyzer.track_lineage("table_x", schema_v1, [], ["table_y"])
+    alert = analyzer.detect_schema_change("table_x", schema_v2)
+    assert alert is not None
     assert alert.severity == "high"
-    assert "model" in alert.affected_downstream
-    assert "dashboard" in alert.affected_downstream
+    assert "table_y" in alert.affected_assets
 
-
-def test_schema_drift_detection():
+def test_anomaly_detector():
     detector = AnomalyDetector()
-    detector.capture_schema("table_y", {"id": "int", "name": "string"})
-    time.sleep(0.01)
-    detector.capture_schema("table_y", {"id": "int", "email": "string"})
-    
-    drift = detector.detect_schema_drift("table_y")
-    assert drift is not None
-    assert "name" in drift["removed_columns"]
-    assert "email" in drift["added_columns"]
-
-
-def test_data_quality_anomaly():
-    analyzer = ImpactAnalyzer()
-    detector = AnomalyDetector(analyzer)
-    detector.capture_schema("table_z", {"col1": "int"}, row_count=1000)
-    
-    anomaly = detector.detect_data_quality_anomaly(
-        "table_z", {"null_rate": 0.25, "row_count": 200}
-    )
+    detector.set_baseline("table_a", {"row_count": 1000, "null_count": 5})
+    anomaly = detector.detect_data_quality_anomaly("table_a", {"row_count": 500, "null_count": 5})
     assert anomaly is not None
-    assert len(anomaly["anomalies"]) > 0
+    assert anomaly.anomaly_type == "data_quality"
 
-
-def test_dashboard_integration():
+def test_impact_dashboard_summary():
     dashboard = ImpactDashboard()
-    dashboard.analyzer.track_lineage("raw.users", [])
-    dashboard.analyzer.track_lineage("staging.users", ["raw.users"])
-    dashboard.analyzer.handle_rename("raw.users", "raw.users_v2")
-    
-    lineage = dashboard.get_lineage_graph("raw.users_v2")
-    assert "staging.users" in lineage["downstream"]
-    assert "raw.users" in lineage["previous_names"]
-    
-    summary = dashboard.get_dashboard_summary()
-    assert summary["total_assets"] >= 2
-    assert summary["total_lineage_edges"] >= 1
+    dashboard.track_asset("A", {"col": "string"}, [], ["B", "C"])
+    summary = dashboard.get_impact_summary("A")
+    assert summary["downstream_count"] == 2
+    assert "B" in summary["downstream_assets"]
 
-
-def test_resolve_renamed_asset():
+def test_impact_dashboard_alerts():
     dashboard = ImpactDashboard()
-    dashboard.analyzer.track_lineage("old_name", [])
-    dashboard.analyzer.handle_rename("old_name", "new_name")
-    
-    resolved = dashboard.resolve_asset_name("old_name")
-    assert resolved == "new_name"
+    dashboard.track_asset("T1", {"a": "int"}, [], ["T2"])
+    dashboard.check_schema_change("T1", {"a": "string"})
+    alerts = dashboard.get_alerts()
+    assert len(alerts) > 0
+    assert alerts[0]["severity"] == "high"
+
+def test_multiple_versions():
+    analyzer = ImpactAnalyzer()
+    analyzer.track_lineage("table", {"v": 1}, [], [])
+    analyzer.track_lineage("table", {"v": 2}, [], [])
+    assert len(analyzer.lineage_versions["table"]) == 2
+    assert analyzer.lineage_versions["table"][1].version == 2
+
+def test_no_schema_change_no_alert():
+    analyzer = ImpactAnalyzer()
+    schema = {"col": "int"}
+    analyzer.track_lineage("stable", schema, [], [])
+    alert = analyzer.detect_schema_change("stable", schema)
+    assert alert is None

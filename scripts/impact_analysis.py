@@ -1,110 +1,75 @@
-import json
-import time
-from typing import Dict, List, Set, Optional, Tuple
-from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Set, Optional
 from datetime import datetime
-import networkx as nx
+from collections import defaultdict
 
-
-@dataclass
-class LineageVersion:
-    version: int
-    timestamp: float
-    upstream: List[str]
-    downstream: List[str]
-    metadata: Dict = field(default_factory=dict)
-
-
-@dataclass
-class Asset:
-    asset_id: str
-    current_name: str
-    previous_names: List[str] = field(default_factory=list)
-    versions: List[LineageVersion] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
-
-
-@dataclass
 class Alert:
-    alert_id: str
-    asset_id: str
-    alert_type: str
-    severity: str
-    message: str
-    affected_downstream: List[str]
-    timestamp: float
-    resolved: bool = False
+    def __init__(self, asset_id: str, message: str, severity: str, affected_assets: List[str]):
+        self.asset_id = asset_id
+        self.message = message
+        self.severity = severity
+        self.affected_assets = affected_assets
+        self.timestamp = datetime.utcnow().isoformat()
 
+class LineageVersion:
+    def __init__(self, asset_id: str, version: int, schema: Dict, upstream: List[str], downstream: List[str]):
+        self.asset_id = asset_id
+        self.version = version
+        self.schema = schema
+        self.upstream = upstream
+        self.downstream = downstream
+        self.timestamp = datetime.utcnow().isoformat()
 
 class ImpactAnalyzer:
     def __init__(self):
-        self.assets: Dict[str, Asset] = {}
-        self.name_mapping: Dict[str, str] = {}
-        self.graph = nx.DiGraph()
-        self.alerts: Dict[str, Alert] = {}
+        self.lineage_versions: Dict[str, List[LineageVersion]] = defaultdict(list)
+        self.rename_map: Dict[str, str] = {}
+        self.alerts: List[Alert] = []
+        self.downstream_graph: Dict[str, Set[str]] = defaultdict(set)
+        self.upstream_graph: Dict[str, Set[str]] = defaultdict(set)
 
-    def track_lineage(self, asset_name: str, upstream: List[str],
-                      downstream: List[str] = None, tags: List[str] = None):
-        downstream = downstream or []
-        tags = tags or []
-        asset_id = self.name_mapping.get(asset_name, asset_name)
+    def track_lineage(self, asset_id: str, schema: Dict, upstream: List[str], downstream: List[str]):
+        version = len(self.lineage_versions[asset_id]) + 1
+        lineage = LineageVersion(asset_id, version, schema, upstream, downstream)
+        self.lineage_versions[asset_id].append(lineage)
         
-        if asset_id not in self.assets:
-            self.assets[asset_id] = Asset(asset_id, asset_name, [], [], tags)
-            self.name_mapping[asset_name] = asset_id
-        
-        asset = self.assets[asset_id]
-        version = LineageVersion(
-            version=len(asset.versions) + 1,
-            timestamp=time.time(),
-            upstream=upstream,
-            downstream=downstream
-        )
-        asset.versions.append(version)
-        
-        self.graph.add_node(asset_name)
+        self.downstream_graph[asset_id] = set(downstream)
+        self.upstream_graph[asset_id] = set(upstream)
         for up in upstream:
-            self.graph.add_edge(up, asset_name)
+            self.downstream_graph[up].add(asset_id)
         for down in downstream:
-            self.graph.add_edge(asset_name, down)
+            self.upstream_graph[down].add(asset_id)
 
-    def handle_rename(self, old_name: str, new_name: str):
-        asset_id = self.name_mapping.get(old_name, old_name)
-        if asset_id in self.assets:
-            asset = self.assets[asset_id]
-            asset.previous_names.append(asset.current_name)
-            asset.current_name = new_name
-            self.name_mapping[new_name] = asset_id
-            nx.relabel_nodes(self.graph, {old_name: new_name}, copy=False)
+    def handle_rename(self, old_id: str, new_id: str):
+        self.rename_map[old_id] = new_id
+        if old_id in self.lineage_versions:
+            self.lineage_versions[new_id] = self.lineage_versions[old_id]
+            for version in self.lineage_versions[new_id]:
+                version.asset_id = new_id
 
-    def get_downstream_impact(self, asset_name: str) -> Dict:
-        asset_id = self.name_mapping.get(asset_name, asset_name)
-        if asset_name not in self.graph:
-            return {"affected_assets": [], "depth": 0}
-        
-        descendants = nx.descendants(self.graph, asset_name)
-        return {
-            "asset": asset_name,
-            "affected_assets": list(descendants),
-            "depth": max([nx.shortest_path_length(self.graph, asset_name, d)
-                         for d in descendants], default=0)
-        }
+    def get_downstream_assets(self, asset_id: str) -> Set[str]:
+        visited = set()
+        queue = [asset_id]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            for downstream in self.downstream_graph.get(current, []):
+                if downstream not in visited:
+                    queue.append(downstream)
+        visited.discard(asset_id)
+        return visited
 
-    def create_alert(self, asset_name: str, alert_type: str,
-                     message: str, severity: str = "medium"):
-        impact = self.get_downstream_impact(asset_name)
-        alert_id = f"{asset_name}_{alert_type}_{int(time.time())}"
-        alert = Alert(
-            alert_id=alert_id,
-            asset_id=self.name_mapping.get(asset_name, asset_name),
-            alert_type=alert_type,
-            severity=severity,
-            message=message,
-            affected_downstream=impact["affected_assets"],
-            timestamp=time.time()
-        )
-        self.alerts[alert_id] = alert
-        return alert
+    def detect_schema_change(self, asset_id: str, new_schema: Dict) -> Optional[Alert]:
+        if asset_id not in self.lineage_versions or not self.lineage_versions[asset_id]:
+            return None
+        last_version = self.lineage_versions[asset_id][-1]
+        if last_version.schema != new_schema:
+            affected = list(self.get_downstream_assets(asset_id))
+            alert = Alert(asset_id, f"Schema changed for {asset_id}", "high", affected)
+            self.alerts.append(alert)
+            return alert
+        return None
 
-    def get_active_alerts(self) -> List[Dict]:
-        return [asdict(a) for a in self.alerts.values() if not a.resolved]
+    def get_alerts(self) -> List[Alert]:
+        return self.alerts

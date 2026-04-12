@@ -1,75 +1,53 @@
-from typing import Dict, List, Optional
-import json
-from scripts.impact_analysis import ImpactAnalyzer
+from typing import Dict, List, Any
+from scripts.impact_analysis import ImpactAnalyzer, Alert
 from scripts.anomaly_detector import AnomalyDetector
-
 
 class ImpactDashboard:
     def __init__(self):
         self.analyzer = ImpactAnalyzer()
-        self.detector = AnomalyDetector(self.analyzer)
+        self.detector = AnomalyDetector()
 
-    def get_lineage_graph(self, asset_name: str) -> Dict:
-        upstream = list(self.analyzer.graph.predecessors(asset_name)) \
-            if asset_name in self.analyzer.graph else []
-        downstream = list(self.analyzer.graph.successors(asset_name)) \
-            if asset_name in self.analyzer.graph else []
-        
-        asset_id = self.analyzer.name_mapping.get(asset_name, asset_name)
-        asset = self.analyzer.assets.get(asset_id)
+    def get_impact_summary(self, asset_id: str) -> Dict[str, Any]:
+        downstream = list(self.analyzer.get_downstream_assets(asset_id))
+        versions = self.analyzer.lineage_versions.get(asset_id, [])
         
         return {
-            "asset": asset_name,
-            "upstream": upstream,
-            "downstream": downstream,
-            "previous_names": asset.previous_names if asset else [],
-            "version_count": len(asset.versions) if asset else 0
+            "asset_id": asset_id,
+            "downstream_count": len(downstream),
+            "downstream_assets": downstream,
+            "version_count": len(versions),
+            "current_version": versions[-1].version if versions else 0
         }
 
-    def get_asset_history(self, asset_name: str) -> List[Dict]:
-        asset_id = self.analyzer.name_mapping.get(asset_name, asset_name)
-        asset = self.analyzer.assets.get(asset_id)
-        if not asset:
-            return []
+    def get_alerts(self, severity: str = None) -> List[Dict[str, Any]]:
+        alerts = self.analyzer.get_alerts()
+        if severity:
+            alerts = [a for a in alerts if a.severity == severity]
         
         return [{
-            "version": v.version,
-            "timestamp": v.timestamp,
-            "upstream_count": len(v.upstream),
-            "downstream_count": len(v.downstream)
-        } for v in asset.versions]
+            "asset_id": a.asset_id,
+            "message": a.message,
+            "severity": a.severity,
+            "affected_count": len(a.affected_assets),
+            "affected_assets": a.affected_assets,
+            "timestamp": a.timestamp
+        } for a in alerts]
 
-    def get_dashboard_summary(self) -> Dict:
-        return {
-            "total_assets": len(self.analyzer.assets),
-            "total_lineage_edges": self.analyzer.graph.number_of_edges(),
-            "active_alerts": len(self.analyzer.get_active_alerts()),
-            "tracked_schemas": len(self.detector.schema_history),
-            "alerts_by_severity": self._group_alerts_by_severity()
-        }
+    def get_anomalies(self) -> List[Dict[str, Any]]:
+        anomalies = self.detector.get_anomalies()
+        return [{
+            "asset_id": a.asset_id,
+            "type": a.anomaly_type,
+            "details": a.details,
+            "timestamp": a.timestamp
+        } for a in anomalies]
 
-    def _group_alerts_by_severity(self) -> Dict[str, int]:
-        alerts = self.analyzer.get_active_alerts()
-        severity_counts = {"high": 0, "medium": 0, "low": 0}
-        for alert in alerts:
-            severity_counts[alert["severity"]] = \
-                severity_counts.get(alert["severity"], 0) + 1
-        return severity_counts
+    def track_asset(self, asset_id: str, schema: Dict, upstream: List[str], downstream: List[str]):
+        self.analyzer.track_lineage(asset_id, schema, upstream, downstream)
 
-    def resolve_asset_name(self, name_or_old_name: str) -> Optional[str]:
-        asset_id = self.analyzer.name_mapping.get(name_or_old_name)
-        if asset_id and asset_id in self.analyzer.assets:
-            return self.analyzer.assets[asset_id].current_name
-        return None
+    def rename_asset(self, old_id: str, new_id: str):
+        self.analyzer.handle_rename(old_id, new_id)
 
-    def export_state(self) -> str:
-        state = {
-            "assets": {k: {
-                "current_name": v.current_name,
-                "previous_names": v.previous_names,
-                "version_count": len(v.versions)
-            } for k, v in self.analyzer.assets.items()},
-            "alerts": self.analyzer.get_active_alerts(),
-            "summary": self.get_dashboard_summary()
-        }
-        return json.dumps(state, indent=2)
+    def check_schema_change(self, asset_id: str, new_schema: Dict) -> bool:
+        alert = self.analyzer.detect_schema_change(asset_id, new_schema)
+        return alert is not None
