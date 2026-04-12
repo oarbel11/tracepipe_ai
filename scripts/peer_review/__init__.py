@@ -1,3 +1,1 @@
-"""Peer review module for Tracepipe AI."""
-
-__all__ = []
+"""Peer review orchestration system."""
