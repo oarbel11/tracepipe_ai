@@ -1,86 +1,61 @@
+"""Tests for CI/CD integration."""
 import pytest
 import json
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from scripts.cicd.webhook_handler import WebhookHandler
 from scripts.cicd.policy_enforcer import PolicyEnforcer
-from scripts.cicd.workflow_generator import generate_workflow
-from scripts.peer_review.governance_policy import GovernancePolicy
+from scripts.cicd.workflow_generator import WorkflowGenerator
+from scripts.peer_review.impact_analyzer import ImpactAnalyzer
 
-def test_policy_enforcer_initialization():
-    enforcer = PolicyEnforcer()
-    assert len(enforcer.policies) > 0
-    assert any(p.policy_id == 'pii-001' for p in enforcer.policies)
 
-def test_enforce_policies_on_sql_files():
-    enforcer = PolicyEnforcer()
-    changed_files = ['etl/transform.sql', 'config/settings.yml', 'data/prod_table.sql']
-    
-    results = enforcer.enforce_policies(changed_files, 'test-repo')
-    
-    assert 'passed' in results
-    assert 'violations' in results
-    assert 'warnings' in results
-    assert results['files_checked'] == 3
-    assert results['sql_files'] == 2
+class TestWebhookHandler:
+    def test_handle_github_webhook(self):
+        handler = WebhookHandler()
+        payload = {
+            "pull_request": {"changed_files": ["pipeline.sql"]},
+            "repository": {"name": "test-repo"}
+        }
+        result = handler.handle_webhook(payload, "github")
+        assert result["status"] == "success"
+        assert result["event_type"] == "pull_request"
 
-def test_production_file_warning():
-    enforcer = PolicyEnforcer()
-    changed_files = ['etl/prod_pipeline.sql']
-    
-    results = enforcer.enforce_policies(changed_files, 'test-repo')
-    
-    assert len(results['warnings']) > 0
-    assert any('prod' in w.lower() for w in results['warnings'])
 
-def test_format_pr_comment():
-    enforcer = PolicyEnforcer()
-    results = {
-        'passed': False,
-        'violations': [{
-            'policy_id': 'pii-001',
-            'policy_name': 'PII Tagging',
-            'file': 'users.sql',
-            'severity': 'high',
-            'description': 'Missing PII tags'
-        }],
-        'warnings': ['Production file modified'],
-        'files_checked': 2,
-        'sql_files': 1
-    }
-    
-    comment = enforcer.format_pr_comment(results)
-    
-    assert 'Tracepipe AI Policy Check' in comment
-    assert 'PII Tagging' in comment
-    assert 'users.sql' in comment
-    assert 'Violations' in comment
+class TestPolicyEnforcer:
+    def test_enforce_policies_no_violations(self):
+        enforcer = PolicyEnforcer()
+        changes = {"files": ["pipeline.sql"]}
+        result = enforcer.enforce_policies(changes)
+        assert "passed" in result
+        assert "impact" in result
+        assert "violations" in result
 
-def test_policy_matching():
-    policy = GovernancePolicy(
-        policy_id='test-001',
-        name='Test Policy',
-        description='Test',
-        applies_to=['prod', 'production']
-    )
-    
-    assert policy.matches_asset([], 'prod_table')
-    assert not policy.matches_asset([], 'dev_table')
+    def test_enforce_policies_with_high_severity(self):
+        enforcer = PolicyEnforcer()
+        changes = {"files": [f"pipeline{i}.sql" for i in range(10)]}
+        result = enforcer.enforce_policies(changes)
+        assert result["requires_approval"] is True
 
-def test_workflow_generator_github(tmp_path):
-    output_file = tmp_path / 'workflow.yml'
-    generate_workflow('github', str(output_file))
-    
-    assert output_file.exists()
-    content = output_file.read_text()
-    assert 'name: Tracepipe AI Policy Check' in content
-    assert 'pull_request' in content
 
-def test_workflow_generator_gitlab(tmp_path):
-    output_file = tmp_path / 'gitlab-ci.yml'
-    generate_workflow('gitlab', str(output_file))
-    
-    assert output_file.exists()
-    content = output_file.read_text()
-    assert 'tracepipe_policy_check' in content
-    assert 'merge_requests' in content
+class TestImpactAnalyzer:
+    def test_analyze_changes(self):
+        analyzer = ImpactAnalyzer()
+        changes = {"files": ["pipeline.sql", "transform.sql"]}
+        result = analyzer.analyze_changes(changes)
+        assert "impacted_pipelines" in result
+        assert "severity" in result
+        assert len(result["impacted_pipelines"]) == 2
+
+
+class TestWorkflowGenerator:
+    def test_generate_github_actions(self):
+        generator = WorkflowGenerator()
+        config = {"branches": ["main", "develop"]}
+        workflow = generator.generate_github_actions(config)
+        assert "name: Tracepipe Policy Check" in workflow
+        assert "pull_request:" in workflow
+
+    def test_generate_gitlab_ci(self):
+        generator = WorkflowGenerator()
+        config = {}
+        workflow = generator.generate_gitlab_ci(config)
+        assert "policy-check:" in workflow
+        assert "merge_requests" in workflow

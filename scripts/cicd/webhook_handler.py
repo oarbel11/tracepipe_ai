@@ -1,83 +1,51 @@
+"""Webhook handler for Git events."""
 import json
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Dict, Optional
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
-from scripts.cicd.policy_enforcer import PolicyEnforcer
+from typing import Dict, Any
 
-class GitWebhookHandler(BaseHTTPRequestHandler):
-    enforcer = PolicyEnforcer()
 
-    def do_POST(self):
-        if self.path != '/webhook/git':
-            self.send_response(404)
-            self.end_headers()
-            return
+class WebhookHandler:
+    """Handles incoming webhooks from Git providers."""
 
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-        event_type = self.headers.get('X-GitHub-Event', self.headers.get('X-Gitlab-Event', ''))
+    def __init__(self):
+        self.supported_events = ["push", "pull_request", "merge_request"]
 
-        try:
-            payload = json.loads(body)
-            result = self.handle_git_event(event_type, payload)
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode())
-        except Exception as e:
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(json.dumps({'error': str(e)}).encode())
+    def handle_webhook(self, payload: Dict[str, Any],
+                       provider: str = "github") -> Dict[str, Any]:
+        """Process incoming webhook payload."""
+        event_type = self._extract_event_type(payload, provider)
 
-    def handle_git_event(self, event_type: str, payload: Dict) -> Dict:
-        if event_type in ['pull_request', 'merge_request']:
-            return self.handle_pr_event(payload)
-        elif event_type == 'push':
-            return self.handle_push_event(payload)
-        return {'status': 'ignored', 'event': event_type}
+        if event_type not in self.supported_events:
+            return {"status": "ignored", "reason": "unsupported_event"}
 
-    def handle_pr_event(self, payload: Dict) -> Dict:
-        action = payload.get('action')
-        if action not in ['opened', 'synchronize', 'reopened']:
-            return {'status': 'skipped', 'reason': f'action={action}'}
-
-        pr_number = payload.get('pull_request', {}).get('number') or payload.get('object_attributes', {}).get('iid')
-        repo = payload.get('repository', {}).get('full_name', 'unknown')
-        changed_files = self.get_changed_files(payload)
-
-        results = self.enforcer.enforce_policies(changed_files, repo)
-        comment = self.enforcer.format_pr_comment(results)
-
+        changes = self._extract_changes(payload, provider)
         return {
-            'status': 'analyzed',
-            'pr': pr_number,
-            'repo': repo,
-            'results': results,
-            'comment': comment
+            "status": "success",
+            "event_type": event_type,
+            "changes": changes
         }
 
-    def handle_push_event(self, payload: Dict) -> Dict:
-        repo = payload.get('repository', {}).get('full_name', 'unknown')
-        commits = payload.get('commits', [])
-        changed_files = [f for c in commits for f in c.get('added', []) + c.get('modified', [])]
+    def _extract_event_type(self, payload: Dict, provider: str) -> str:
+        """Extract event type from payload."""
+        if provider == "github":
+            if "pull_request" in payload:
+                return "pull_request"
+            elif "commits" in payload:
+                return "push"
+        elif provider == "gitlab":
+            return payload.get("object_kind", "unknown")
+        return "unknown"
 
-        results = self.enforcer.enforce_policies(changed_files, repo)
-        return {'status': 'push_analyzed', 'repo': repo, 'results': results}
+    def _extract_changes(self, payload: Dict, provider: str) -> Dict:
+        """Extract file changes from payload."""
+        files = []
+        if provider == "github" and "pull_request" in payload:
+            files = payload.get("pull_request", {}).get("changed_files", [])
+        elif "commits" in payload:
+            for commit in payload.get("commits", []):
+                files.extend(commit.get("added", []))
+                files.extend(commit.get("modified", []))
 
-    def get_changed_files(self, payload: Dict) -> list:
-        pr = payload.get('pull_request') or payload.get('object_attributes', {})
-        return pr.get('changed_files', [])
-
-def start_server(port: int = 8080):
-    server = HTTPServer(('0.0.0.0', port), GitWebhookHandler)
-    print(f"Webhook server listening on port {port}")
-    server.serve_forever()
-
-if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=8080)
-    args = parser.parse_args()
-    start_server(args.port)
+        return {
+            "files": files,
+            "repository": payload.get("repository", {})
+        }
