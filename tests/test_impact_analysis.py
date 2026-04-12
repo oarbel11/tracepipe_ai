@@ -1,29 +1,23 @@
-"""Tests for impact analysis."""
 import pytest
-from scripts.peer_review.impact_analyzer import InteractiveImpactAnalyzer
+from src.impact_analysis import InteractiveImpactAnalyzer
 
 
 def test_interactive_analyzer_init():
-    """Test InteractiveImpactAnalyzer initialization."""
     analyzer = InteractiveImpactAnalyzer()
-    assert analyzer is not None
-    assert analyzer.config == {}
+    assert analyzer.config is not None
 
 
 def test_analyze_changes():
-    """Test analyzing changes."""
     analyzer = InteractiveImpactAnalyzer()
-    result = analyzer.analyze_changes({
-        "files": ["pipeline.py"],
-        "type": "modification"
-    })
-    assert result["status"] == "success"
-    assert "impact" in result
+    result = analyzer.analyze_changes({'files': ['file1.py', 'file2.py']})
+    assert 'impact_score' in result
+    assert 'risk_level' in result
 
 
 def test_get_report():
-    """Test getting impact report."""
     analyzer = InteractiveImpactAnalyzer()
+    analyzer.analyze_changes({'files': ['file1.py']})
     report = analyzer.get_report()
-    assert isinstance(report, str)
-    assert "report" in report
+    assert 'status' in report
+    assert report['status'] == 'success'
+    assert 'report' in report
