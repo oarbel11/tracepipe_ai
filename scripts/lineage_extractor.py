@@ -1,85 +1,80 @@
-import networkx as nx
 from typing import Dict, List, Set, Optional
-from dataclasses import dataclass
 
-@dataclass
 class ColumnNode:
-    table: str
-    column: str
-    operation: str = ""
+    def __init__(self, dataframe: str, column: str):
+        self.dataframe = dataframe
+        self.column = column
+        self.dependencies = []
 
-    def __hash__(self):
-        return hash((self.table, self.column))
+    def __repr__(self):
+        return f"{self.dataframe}.{self.column}"
 
     def __eq__(self, other):
         if not isinstance(other, ColumnNode):
             return False
-        return self.table == other.table and self.column == other.column
+        return self.dataframe == other.dataframe and self.column == other.column
+
+    def __hash__(self):
+        return hash((self.dataframe, self.column))
 
 class LineageExtractor:
-    def __init__(self):
-        self.graph = nx.DiGraph()
-        self.column_mappings: Dict[str, Set[str]] = {}
+    def __init__(self, parsed_data: Dict):
+        self.parsed_data = parsed_data
+        self.nodes = {}
+        self.edges = []
 
-    def add_transformation(self, source_table: str, source_col: str,
-                          target_table: str, target_col: str, operation: str = ""):
-        src = ColumnNode(source_table, source_col, operation)
-        tgt = ColumnNode(target_table, target_col, operation)
-        self.graph.add_edge(src, tgt, operation=operation)
-        key = f"{target_table}.{target_col}"
-        if key not in self.column_mappings:
-            self.column_mappings[key] = set()
-        self.column_mappings[key].add(f"{source_table}.{source_col}")
+    def build_lineage(self) -> Dict[str, List[ColumnNode]]:
+        operations = self.parsed_data.get('operations', [])
+        for op in operations:
+            self._process_operation(op)
+        return self._build_lineage_dict()
 
-    def get_upstream_columns(self, table: str, column: str) -> List[ColumnNode]:
-        target = ColumnNode(table, column)
-        if target not in self.graph:
+    def _process_operation(self, op: Dict):
+        target_df = op['target']
+        source_df = op.get('source')
+        operation = op['operation']
+        columns = op.get('columns', [])
+
+        if operation == 'select':
+            for col in columns:
+                target_node = self._get_or_create_node(target_df, col)
+                if source_df:
+                    source_node = self._get_or_create_node(source_df, col)
+                    target_node.dependencies.append(source_node)
+                    self.edges.append((source_node, target_node))
+        elif operation == 'withColumn':
+            if columns:
+                target_col = columns[0]
+                target_node = self._get_or_create_node(target_df, target_col)
+                if source_df:
+                    for col in columns[1:]:
+                        source_node = self._get_or_create_node(source_df, col)
+                        target_node.dependencies.append(source_node)
+                        self.edges.append((source_node, target_node))
+
+    def _get_or_create_node(self, df: str, col: str) -> ColumnNode:
+        key = f"{df}.{col}"
+        if key not in self.nodes:
+            self.nodes[key] = ColumnNode(df, col)
+        return self.nodes[key]
+
+    def _build_lineage_dict(self) -> Dict[str, List[ColumnNode]]:
+        result = {}
+        for key, node in self.nodes.items():
+            result[key] = node.dependencies
+        return result
+
+    def get_upstream_columns(self, df: str, col: str) -> List[ColumnNode]:
+        node = self.nodes.get(f"{df}.{col}")
+        if not node:
             return []
-        upstream = []
-        for node in nx.ancestors(self.graph, target):
-            upstream.append(node)
-        return upstream
+        return self._get_all_upstream(node, set())
 
-    def get_downstream_columns(self, table: str, column: str) -> List[ColumnNode]:
-        source = ColumnNode(table, column)
-        if source not in self.graph:
+    def _get_all_upstream(self, node: ColumnNode, visited: Set) -> List[ColumnNode]:
+        if node in visited:
             return []
-        downstream = []
-        for node in nx.descendants(self.graph, source):
-            downstream.append(node)
-        return downstream
-
-    def get_lineage_path(self, source_table: str, source_col: str,
-                        target_table: str, target_col: str) -> List[List[ColumnNode]]:
-        src = ColumnNode(source_table, source_col)
-        tgt = ColumnNode(target_table, target_col)
-        if src not in self.graph or tgt not in self.graph:
-            return []
-        try:
-            paths = nx.all_simple_paths(self.graph, src, tgt)
-            return [list(path) for path in paths]
-        except nx.NetworkXNoPath:
-            return []
-
-    def get_column_impact(self, table: str, column: str) -> Dict:
-        upstream = self.get_upstream_columns(table, column)
-        downstream = self.get_downstream_columns(table, column)
-        return {
-            'column': f"{table}.{column}",
-            'upstream_count': len(upstream),
-            'downstream_count': len(downstream),
-            'upstream': [f"{n.table}.{n.column}" for n in upstream],
-            'downstream': [f"{n.table}.{n.column}" for n in downstream]
-        }
-
-    def export_lineage(self) -> List[Dict]:
-        lineage = []
-        for src, tgt, data in self.graph.edges(data=True):
-            lineage.append({
-                'source_table': src.table,
-                'source_column': src.column,
-                'target_table': tgt.table,
-                'target_column': tgt.column,
-                'operation': data.get('operation', '')
-            })
-        return lineage
+        visited.add(node)
+        result = list(node.dependencies)
+        for dep in node.dependencies:
+            result.extend(self._get_all_upstream(dep, visited))
+        return result
