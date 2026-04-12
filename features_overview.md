@@ -98,3 +98,18 @@ Total impacted: 3 table(s)
 ```
 
 Risk levels: 🟢 GREEN (no downstream) · 🟡 YELLOW (1–4 tables) · 🔴 RED (5+ tables)
+
+---
+
+## 📅 2026-04-12
+
+### 🔗 Feature #33 — Integrate with Git-based CI/CD Workflows for Policy Enforcement
+
+**What it is & why it matters:**
+Extend the peer review orchestrator to integrate directly into Git-based CI/CD pipelines (e.g., GitHub Actions, GitLab CI) for data pipeline changes. This will enable automated triggering of impact analysis, policy checks (e.g., PII tagging, data quality rule adherence), and approval workflows directly within the developer's existing change management process, shifting governance 'left' and making it a proactive rather than reactive step.
+
+**How to use it:**
+
+See `tests/test_feature_33.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/43)
