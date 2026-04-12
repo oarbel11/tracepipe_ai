@@ -1,49 +1,58 @@
-"""Git-based CI/CD integration."""
-from typing import Dict, Any, Optional
-from .impact_analyzer import InteractiveImpactAnalyzer
-from .policy_enforcer import CICDPolicyEnforcer
-from .approval_workflow import ApprovalWorkflow
+from typing import Dict, List, Any, Optional
+import logging
+from .impact_analyzer import ImpactAnalyzer
+from .policy_enforcer import PolicyEnforcer
+
+logger = logging.getLogger(__name__)
 
 
 class GitCICDIntegration:
-    """Integrates with Git-based CI/CD workflows."""
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {}
-        self.analyzer = InteractiveImpactAnalyzer(config)
-        self.enforcer = CICDPolicyEnforcer(
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        if config is None:
+            config = {}
+        
+        self.config = config
+        self.impact_analyzer = ImpactAnalyzer()
+        self.policy_enforcer = PolicyEnforcer(
             policies=config.get("policies", []),
-            ci_config=config.get("ci_config", {})
+            impact_analyzer=self.impact_analyzer
         )
-        self.workflow = ApprovalWorkflow(
-            approvers=config.get("approvers", [])
-        )
-    
+        logger.info("GitCICDIntegration initialized")
+
     def process_commit(self, commit_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a commit in the CI/CD pipeline."""
-        impact = self.analyzer.analyze_changes(commit_data)
-        policy_result = self.enforcer.enforce_in_pipeline(commit_data)
+        """Process a commit and return analysis results."""
+        changes = self._extract_changes(commit_data)
         
-        if not policy_result["compliant"]:
-            return {
-                "status": "failed",
-                "reason": "Policy violations",
-                "violations": policy_result["violations"]
-            }
+        impact = self.impact_analyzer.analyze_changes(changes)
+        policy_result = self.policy_enforcer.enforce_policies(changes)
         
-        if impact["impact"]["risk_level"] in ["high", "critical"]:
-            approval = self.workflow.request_approval(
-                commit_data.get("commit_id", "unknown"),
-                {"impact": impact, "policy": policy_result}
-            )
-            return {"status": "approval_required", "approval": approval}
+        return {
+            "commit_sha": commit_data.get("sha", ""),
+            "impact": impact,
+            "policy_check": policy_result,
+            "approved": policy_result["passed"] and impact["risk_level"] != "high"
+        }
+
+    def handle_webhook(self, event_type: str,
+                      payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle webhook events from Git providers."""
+        if event_type not in ["push", "pull_request"]:
+            return {"status": "ignored", "message": f"Event type {event_type} not supported"}
         
-        return {"status": "success", "impact": impact, 
-                "policy": policy_result}
-    
-    def webhook_handler(self, event: str, 
-                       payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle Git webhook events."""
-        if event == "push":
-            return self.process_commit(payload)
-        return {"status": "ignored", "event": event}
+        if event_type == "push":
+            commits = payload.get("commits", [])
+            results = [self.process_commit(commit) for commit in commits]
+            return {"status": "processed", "results": results}
+        
+        return {"status": "success"}
+
+    def _extract_changes(self, commit_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract changes from commit data."""
+        changes = []
+        for file_path in commit_data.get("modified", []):
+            changes.append({"file_path": file_path, "change_type": "modified"})
+        for file_path in commit_data.get("added", []):
+            changes.append({"file_path": file_path, "change_type": "added"})
+        for file_path in commit_data.get("removed", []):
+            changes.append({"file_path": file_path, "change_type": "deleted"})
+        return changes
