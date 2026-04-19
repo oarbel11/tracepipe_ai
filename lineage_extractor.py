@@ -1,67 +1,76 @@
-from typing import Dict, List, Optional
-from unified_lineage import LineageGraph, LineageNode, LineageEdge, ColumnNode
+from unified_lineage import LineageGraph, LineageNode, LineageEdge
+
+
+class ColumnNode(LineageNode):
+    def __init__(self, node_id, column_name, dataframe, metadata=None):
+        super().__init__(node_id, "column", metadata)
+        self.column_name = column_name
+        self.dataframe = dataframe
+
+    def __repr__(self):
+        return f"ColumnNode({self.column_name}, df={self.dataframe})"
 
 
 class LineageExtractor:
-    """Extracts lineage from Databricks logical plans."""
-
     def __init__(self):
         self.graph = LineageGraph()
 
-    def extract_from_plan(self, logical_plan: Dict) -> LineageGraph:
-        """Extract lineage from a logical plan."""
-        self.graph = LineageGraph()
-        self._process_plan(logical_plan)
+    def build_lineage(self, operations):
+        for op in operations:
+            if op['type'] == 'select':
+                self._handle_select(op)
+            elif op['type'] == 'join':
+                self._handle_join(op)
+            elif op['type'] == 'filter':
+                self._handle_filter(op)
+            elif op['type'] == 'transform':
+                self._handle_transform(op)
         return self.graph
 
-    def build_lineage(self, logical_plan: Dict) -> LineageGraph:
-        """Build lineage graph from logical plan."""
-        return self.extract_from_plan(logical_plan)
-
-    def _process_plan(self, plan: Dict, parent_node: Optional[LineageNode] = None):
-        """Recursively process logical plan nodes."""
-        if not plan:
-            return None
-
-        node_type = plan.get('type', 'unknown')
-        node_id = plan.get('id', f"{node_type}_{id(plan)}")
-        node_name = plan.get('name', node_id)
-
-        if node_type == 'column':
-            node = ColumnNode(
-                id=node_id,
-                node_type=node_type,
-                name=node_name,
-                column_name=plan.get('column_name', node_name),
-                dataframe=plan.get('dataframe'),
-                metadata=plan.get('metadata', {})
-            )
-        else:
-            node = LineageNode(
-                id=node_id,
-                node_type=node_type,
-                name=node_name,
-                metadata=plan.get('metadata', {})
-            )
-
-        self.graph.add_node(node)
-
-        if parent_node:
-            edge = LineageEdge(
-                source=node,
-                target=parent_node,
-                edge_type=plan.get('edge_type', 'dependency')
-            )
+    def _handle_select(self, op):
+        source_df = op['source']
+        target_df = op['target']
+        columns = op.get('columns', [])
+        for col in columns:
+            source_node = ColumnNode(f"{source_df}.{col}", col, source_df)
+            target_node = ColumnNode(f"{target_df}.{col}", col, target_df)
+            self.graph.add_node(source_node)
+            self.graph.add_node(target_node)
+            edge = LineageEdge(source_node.node_id, target_node.node_id, "select")
             self.graph.add_edge(edge)
 
-        for child in plan.get('children', []):
-            self._process_plan(child, node)
+    def _handle_join(self, op):
+        left_df = op['left']
+        right_df = op['right']
+        target_df = op['target']
+        on_col = op.get('on', 'id')
+        left_node = ColumnNode(f"{left_df}.{on_col}", on_col, left_df)
+        right_node = ColumnNode(f"{right_df}.{on_col}", on_col, right_df)
+        target_node = ColumnNode(f"{target_df}.{on_col}", on_col, target_df)
+        self.graph.add_node(left_node)
+        self.graph.add_node(right_node)
+        self.graph.add_node(target_node)
+        self.graph.add_edge(LineageEdge(left_node.node_id, target_node.node_id, "join"))
+        self.graph.add_edge(LineageEdge(right_node.node_id, target_node.node_id, "join"))
 
-        for input_node in plan.get('inputs', []):
-            self._process_plan(input_node, node)
+    def _handle_filter(self, op):
+        source_df = op['source']
+        target_df = op['target']
+        columns = op.get('columns', [])
+        for col in columns:
+            source_node = ColumnNode(f"{source_df}.{col}", col, source_df)
+            target_node = ColumnNode(f"{target_df}.{col}", col, target_df)
+            self.graph.add_node(source_node)
+            self.graph.add_node(target_node)
+            self.graph.add_edge(LineageEdge(source_node.node_id, target_node.node_id, "filter"))
 
-        return node
-
-    def get_lineage_graph(self) -> LineageGraph:
-        """Return the current lineage graph."""
-        return self.graph
+    def _handle_transform(self, op):
+        source_df = op['source']
+        target_df = op['target']
+        source_col = op.get('source_column')
+        target_col = op.get('target_column')
+        source_node = ColumnNode(f"{source_df}.{source_col}", source_col, source_df)
+        target_node = ColumnNode(f"{target_df}.{target_col}", target_col, target_df)
+        self.graph.add_node(source_node)
+        self.graph.add_node(target_node)
+        self.graph.add_edge(LineageEdge(source_node.node_id, target_node.node_id, "transform"))

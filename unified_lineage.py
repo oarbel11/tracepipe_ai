@@ -1,92 +1,79 @@
-from typing import List, Dict, Set, Optional
-from dataclasses import dataclass, field
-
-
-@dataclass
 class LineageNode:
-    """Represents a node in the lineage graph."""
-    id: str
-    node_type: str
-    name: str
-    metadata: Dict = field(default_factory=dict)
-    dataframe: Optional[str] = None
+    def __init__(self, node_id, node_type, metadata=None):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.metadata = metadata or {}
 
-    def __hash__(self):
-        return hash(self.id)
-
-    def __eq__(self, other):
-        if isinstance(other, LineageNode):
-            return self.id == other.id
-        return False
+    def __repr__(self):
+        return f"LineageNode({self.node_id}, {self.node_type})"
 
 
-@dataclass
-class ColumnNode(LineageNode):
-    """Represents a column node in the lineage graph."""
-    column_name: str = ""
-    dataframe: Optional[str] = None
-
-    def __post_init__(self):
-        if not self.column_name and 'column_name' in self.metadata:
-            self.column_name = self.metadata['column_name']
-
-
-@dataclass
 class LineageEdge:
-    """Represents an edge in the lineage graph."""
-    source: LineageNode
-    target: LineageNode
-    edge_type: str = "dependency"
-    metadata: Dict = field(default_factory=dict)
+    def __init__(self, source, target, edge_type="default", metadata=None):
+        self.source = source
+        self.target = target
+        self.edge_type = edge_type
+        self.metadata = metadata or {}
+
+    def __repr__(self):
+        return f"LineageEdge({self.source} -> {self.target})"
 
 
 class LineageGraph:
-    """Manages the lineage graph with nodes and edges."""
-
     def __init__(self):
-        self.nodes: Dict[str, LineageNode] = {}
-        self.edges: List[LineageEdge] = []
+        self.nodes = {}
+        self.edges = []
 
-    def add_node(self, node: LineageNode) -> None:
-        """Add a node to the graph."""
-        self.nodes[node.id] = node
+    def add_node(self, node):
+        self.nodes[node.node_id] = node
 
-    def add_edge(self, edge: LineageEdge) -> None:
-        """Add an edge to the graph."""
-        self.add_node(edge.source)
-        self.add_node(edge.target)
+    def add_edge(self, edge):
         self.edges.append(edge)
 
-    def get_upstream(self, node: LineageNode) -> List[LineageNode]:
-        """Get all upstream nodes recursively."""
-        visited: Set[str] = set()
-        result: List[LineageNode] = []
+    def get_upstream(self, node_id, visited=None):
+        if visited is None:
+            visited = set()
+        if node_id in visited:
+            return set()
+        visited.add(node_id)
+        upstream = set()
+        for edge in self.edges:
+            if edge.target == node_id:
+                upstream.add(edge.source)
+                upstream.update(self.get_upstream(edge.source, visited))
+        return upstream
 
-        def traverse(current: LineageNode):
-            if current.id in visited:
-                return
-            visited.add(current.id)
+    def get_downstream(self, node_id, visited=None):
+        if visited is None:
+            visited = set()
+        if node_id in visited:
+            return set()
+        visited.add(node_id)
+        downstream = set()
+        for edge in self.edges:
+            if edge.source == node_id:
+                downstream.add(edge.target)
+                downstream.update(self.get_downstream(edge.target, visited))
+        return downstream
+
+    def merge(self, other_graph):
+        for node in other_graph.nodes.values():
+            if node.node_id not in self.nodes:
+                self.add_node(node)
+        for edge in other_graph.edges:
+            self.add_edge(edge)
+
+    def get_path(self, start_id, end_id):
+        visited = set()
+        queue = [(start_id, [start_id])]
+        while queue:
+            current, path = queue.pop(0)
+            if current == end_id:
+                return path
+            if current in visited:
+                continue
+            visited.add(current)
             for edge in self.edges:
-                if edge.target.id == current.id:
-                    result.append(edge.source)
-                    traverse(edge.source)
-
-        traverse(node)
-        return result
-
-    def get_downstream(self, node: LineageNode) -> List[LineageNode]:
-        """Get all downstream nodes recursively."""
-        visited: Set[str] = set()
-        result: List[LineageNode] = []
-
-        def traverse(current: LineageNode):
-            if current.id in visited:
-                return
-            visited.add(current.id)
-            for edge in self.edges:
-                if edge.source.id == current.id:
-                    result.append(edge.target)
-                    traverse(edge.target)
-
-        traverse(node)
-        return result
+                if edge.source == current and edge.target not in visited:
+                    queue.append((edge.target, path + [edge.target]))
+        return None

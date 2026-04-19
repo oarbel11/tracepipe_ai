@@ -1,43 +1,44 @@
 import pytest
-from tracepipe_ai.lineage import UnifiedLineageGraph, LineageExtractor, ColumnNode
+from unified_lineage import LineageGraph, LineageNode, LineageEdge
+from lineage_extractor import LineageExtractor, ColumnNode
 
 
-def test_unified_lineage_graph():
-    graph = UnifiedLineageGraph()
-    graph.add_node('node1', {'type': 'table'})
-    graph.add_node('node2', {'type': 'table'})
-    graph.add_edge('node1', 'node2')
-    
-    assert 'node1' in graph.nodes
-    assert 'node2' in graph.nodes
+def test_lineage_graph():
+    graph = LineageGraph()
+    node1 = LineageNode("n1", "table")
+    node2 = LineageNode("n2", "table")
+    graph.add_node(node1)
+    graph.add_node(node2)
+    edge = LineageEdge("n1", "n2")
+    graph.add_edge(edge)
+    assert len(graph.nodes) == 2
     assert len(graph.edges) == 1
+
+
+def test_upstream_downstream():
+    graph = LineageGraph()
+    graph.add_node(LineageNode("n1", "table"))
+    graph.add_node(LineageNode("n2", "table"))
+    graph.add_node(LineageNode("n3", "table"))
+    graph.add_edge(LineageEdge("n1", "n2"))
+    graph.add_edge(LineageEdge("n2", "n3"))
+    upstream = graph.get_upstream("n3")
+    assert "n2" in upstream
+    assert "n1" in upstream
+    downstream = graph.get_downstream("n1")
+    assert "n2" in downstream
+    assert "n3" in downstream
+
+
+def test_column_node():
+    node = ColumnNode("df1.col1", "col1", "df1")
+    assert node.column_name == "col1"
+    assert node.dataframe == "df1"
 
 
 def test_lineage_extractor():
     extractor = LineageExtractor()
-    plan = "Project [col1, col2]\nRelation [col1, col2]"
-    result = extractor.extract_from_plan(plan)
-    
-    assert 'col1' in result
-    assert 'col2' in result
-
-
-def test_column_node():
-    node = ColumnNode('col1', dataframe='df1')
-    assert node.column == 'col1'
-    assert node.dataframe == 'df1'
-
-
-def test_upstream_downstream():
-    graph = UnifiedLineageGraph()
-    graph.add_node('node1')
-    graph.add_node('node2')
-    graph.add_node('node3')
-    graph.add_edge('node1', 'node2')
-    graph.add_edge('node2', 'node3')
-    
-    upstream = graph.get_upstream('node2')
-    assert 'node1' in upstream
-    
-    downstream = graph.get_downstream('node2')
-    assert 'node3' in downstream
+    ops = [{"type": "select", "source": "df1", "target": "df2", "columns": ["col1"]}]
+    graph = extractor.build_lineage(ops)
+    assert len(graph.nodes) == 2
+    assert len(graph.edges) == 1
