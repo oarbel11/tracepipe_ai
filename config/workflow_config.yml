@@ -1,0 +1,43 @@
+policies:
+  - id: pii_protection
+    name: PII Protection Policy
+    rule_type: pii_check
+    severity: high
+    message: Changes involving PII require privacy team approval
+  
+  - id: downstream_impact
+    name: Downstream Impact Limit
+    rule_type: downstream_limit
+    max_downstream: 5
+    severity: medium
+    message: Changes affecting >5 downstream assets require data owner approval
+
+approval_routing:
+  pii_detected:
+    approvers:
+      - privacy-team@company.com
+    required: true
+  
+  high_impact:
+    approvers:
+      - data-owner@company.com
+      - data-steward@company.com
+    required: true
+  
+  schema_change:
+    approvers:
+      - schema-governance@company.com
+    required: false
+
+notifications:
+  slack:
+    enabled: true
+    webhook_url: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+  
+  teams:
+    enabled: false
+    webhook_url: https://outlook.office.com/webhook/YOUR/WEBHOOK/URL
+
+audit:
+  retention_days: 90
+  storage_path: ./audit_logs
