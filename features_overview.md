@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #37 — Enhance Robustness and Cross-Workspace / Historical Lineage for Spark Notebooks
+
+**What it is & why it matters:**
+Improve the accuracy and completeness of column-level lineage extraction for highly complex Spark transformations, including dynamic SQL generation, custom Spark functions, and nested UDFs in Databricks notebooks. Additionally, enable seamless cross-workspace visualization of notebook lineage details and extend historical lineage tracking beyond Unity Catalog's native limits (e.g., 1-year rolling window) to meet enterprise audit and long-term analysis requirements. This will elevate the feature from functional to truly robust and enterprise-grade.
+
+**How to use it:**
+
+See `tests/test_enhanced_lineage.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/47)
