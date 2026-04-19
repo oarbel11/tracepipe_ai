@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #44 — Actionable Governance Policy Enforcement within the Interactive Lineage Graph
+
+**What it is & why it matters:**
+While overlaying governance policies directly onto the lineage graph provides crucial context, a truly production-ready feature should empower users to act on these insights within the interactive UI. This involves transforming policy overlays from passive visualization to active enforcement, allowing the system to not only display potential policy violations but also to automatically flag, alert, or trigger remediation actions directly from the graph.
+
+**How to use it:**
+
+See `tests/test_policy_enforcement.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/54)
