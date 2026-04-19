@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #38 — Integrate with CI/CD for Automated Policy Enforcement and Actionable AI Feedback
+
+**What it is & why it matters:**
+Enhance the Peer Review Orchestrator with seamless, webhook-driven integration into popular CI/CD pipelines (e.g., GitHub Actions, GitLab CI). This integration should enable automated enforcement of data governance policies and data contracts identified by the AI, allowing for blocking merges or requiring specific approvals based on detected impact (e.g., PII exposure, breaking schema changes, critical cost/performance issues). Improve the AI's feedback to be context-aware across the entire data stack, providing highly actionable and precise suggestions within the PR itself, thereby reducing human review burden and preventing risky changes from reaching production.
+
+**How to use it:**
+
+See `tests/test_ci_cd_integration.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/48)
