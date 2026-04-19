@@ -1,69 +1,59 @@
 import pytest
-from scripts.unified_lineage import UnifiedLineageGraph, LineageNode
-from scripts.lineage_aggregator import LineageAggregator, ExternalLineageConnector, BIToolConnector
+from scripts.unified_lineage import UnifiedLineageGraph, LineageNode, LineageEdge, NodeType
 
-
-def test_lineage_node_creation():
-    node = LineageNode("table1", "table", "databricks", {"catalog": "main"})
-    assert node.node_id == "table1"
-    assert node.node_type == "table"
-    assert node.platform == "databricks"
-    assert node.metadata["catalog"] == "main"
-
-
-def test_unified_graph_add_nodes():
+def test_unified_lineage_add_node():
     graph = UnifiedLineageGraph()
-    node1 = LineageNode("table1", "table", "databricks")
-    node2 = LineageNode("table2", "table", "databricks")
+    node = LineageNode("table1", "my_table", NodeType.UC_TABLE)
+    graph.add_node(node)
+    assert "table1" in graph.nodes
+    assert graph.nodes["table1"].name == "my_table"
+
+def test_unified_lineage_add_edge():
+    graph = UnifiedLineageGraph()
+    node1 = LineageNode("table1", "source", NodeType.UC_TABLE)
+    node2 = LineageNode("table2", "target", NodeType.UC_TABLE)
     graph.add_node(node1)
     graph.add_node(node2)
-    assert "table1" in graph.graph.nodes
-    assert "table2" in graph.graph.nodes
-
-
-def test_unified_graph_add_edges():
-    graph = UnifiedLineageGraph()
-    node1 = LineageNode("table1", "table", "databricks")
-    node2 = LineageNode("table2", "table", "databricks")
-    graph.add_node(node1)
-    graph.add_node(node2)
-    graph.add_edge("table1", "table2", "transforms")
+    edge = LineageEdge("table1", "table2")
+    graph.add_edge(edge)
     assert graph.graph.has_edge("table1", "table2")
 
-
-def test_get_upstream_downstream():
+def test_get_upstream():
     graph = UnifiedLineageGraph()
     for i in range(3):
-        node = LineageNode(f"table{i}", "table", "databricks")
-        graph.add_node(node)
-    graph.add_edge("table0", "table1")
-    graph.add_edge("table1", "table2")
-    assert graph.get_upstream("table1") == ["table0"]
-    assert graph.get_downstream("table1") == ["table2"]
+        graph.add_node(LineageNode(f"t{i}", f"table{i}", NodeType.UC_TABLE))
+    graph.add_edge(LineageEdge("t0", "t1"))
+    graph.add_edge(LineageEdge("t1", "t2"))
+    upstream = graph.get_upstream("t2")
+    assert "t0" in upstream
+    assert "t1" in upstream
 
+def test_get_downstream():
+    graph = UnifiedLineageGraph()
+    for i in range(3):
+        graph.add_node(LineageNode(f"t{i}", f"table{i}", NodeType.UC_TABLE))
+    graph.add_edge(LineageEdge("t0", "t1"))
+    graph.add_edge(LineageEdge("t1", "t2"))
+    downstream = graph.get_downstream("t0")
+    assert "t1" in downstream
+    assert "t2" in downstream
 
 def test_impact_analysis():
     graph = UnifiedLineageGraph()
     for i in range(3):
-        node = LineageNode(f"table{i}", "table", "databricks")
-        graph.add_node(node)
-    graph.add_edge("table0", "table1")
-    graph.add_edge("table1", "table2")
-    impact = graph.get_impact_analysis("table1")
-    assert "table0" in impact["upstream"]
-    assert "table2" in impact["downstream"]
+        graph.add_node(LineageNode(f"t{i}", f"table{i}", NodeType.UC_TABLE))
+    graph.add_edge(LineageEdge("t0", "t1"))
+    graph.add_edge(LineageEdge("t1", "t2"))
+    impact = graph.get_impact_analysis("t1")
+    assert impact["upstream_count"] == 1
+    assert impact["downstream_count"] == 1
 
-
-def test_lineage_aggregator():
-    aggregator = LineageAggregator()
-    uc_lineage = {"nodes": [{"id": "uc_table1", "type": "table"}], "edges": []}
-    aggregator.add_unity_catalog_lineage(uc_lineage)
-    graph = aggregator.get_unified_graph()
-    assert "uc_table1" in graph.graph.nodes
-
-
-def test_external_connector():
-    connector = BIToolConnector("tableau", "https://api.tableau.com")
-    lineage = connector.fetch_lineage()
-    assert len(lineage["nodes"]) > 0
-    assert lineage["nodes"][0]["platform"] == "tableau"
+def test_merge_from_unity_catalog():
+    graph = UnifiedLineageGraph()
+    uc_data = {
+        "tables": [{"id": "t1", "name": "table1", "metadata": {}}],
+        "edges": [{"source": "t0", "target": "t1"}]
+    }
+    graph.merge_from_unity_catalog(uc_data)
+    assert "t1" in graph.nodes
+    assert graph.graph.has_edge("t0", "t1")

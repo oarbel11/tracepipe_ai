@@ -1,68 +1,68 @@
-import json
-import re
-from typing import List, Dict, Any, Optional
+from databricks.sdk import WorkspaceClient
+from typing import List, Dict, Optional
+from dataclasses import dataclass
 
-
+@dataclass
 class ColumnNode:
-    """Represents a column-level lineage node"""
-    def __init__(self, table: str, column: str, transformation: Optional[str] = None):
-        self.table = table
-        self.column = column
-        self.transformation = transformation
-        self.dependencies = []
+    name: str
+    table: str
+    data_type: str
+    upstream_columns: List[str] = None
 
-    def add_dependency(self, node: 'ColumnNode'):
-        self.dependencies.append(node)
-
-    def __repr__(self):
-        return f"{self.table}.{self.column}"
-
+    def __post_init__(self):
+        if self.upstream_columns is None:
+            self.upstream_columns = []
 
 class LineageExtractor:
-    """Extracts lineage from Databricks Unity Catalog and Spark queries"""
-
-    def __init__(self):
-        self.lineage_data = []
-
-    def extract_from_query(self, query: str) -> Dict[str, Any]:
-        """Extract lineage from SQL query"""
-        query = query.lower().strip()
-        lineage = {"sources": [], "target": None, "type": "query"}
-
-        from_match = re.search(r'from\s+([\w.]+)', query)
-        if from_match:
-            lineage["sources"].append(from_match.group(1))
-
-        join_matches = re.findall(r'join\s+([\w.]+)', query)
-        lineage["sources"].extend(join_matches)
-
-        create_match = re.search(r'create\s+(?:table|view)\s+([\w.]+)', query)
-        insert_match = re.search(r'insert\s+into\s+([\w.]+)', query)
-
-        if create_match:
-            lineage["target"] = create_match.group(1)
-        elif insert_match:
-            lineage["target"] = insert_match.group(1)
-
-        self.lineage_data.append(lineage)
-        return lineage
-
-    def extract_column_lineage(self, query: str) -> List[ColumnNode]:
-        """Extract column-level lineage from query"""
-        nodes = []
-        select_match = re.search(r'select\s+(.+?)\s+from', query.lower())
-        if select_match:
-            columns = select_match.group(1).split(',')
-            for col in columns:
-                col = col.strip()
-                if ' as ' in col:
-                    expr, alias = col.split(' as ')
-                    node = ColumnNode("target", alias.strip(), expr.strip())
-                else:
-                    node = ColumnNode("target", col)
-                nodes.append(node)
-        return nodes
-
-    def get_lineage_graph(self) -> Dict[str, Any]:
-        """Return complete lineage graph"""
-        return {"nodes": self.lineage_data, "type": "spark_lineage"}
+    def __init__(self, workspace_client: WorkspaceClient):
+        self.client = workspace_client
+    
+    def extract_table_lineage(self, table_name: str) -> Dict:
+        try:
+            lineage = self.client.lineage.get_table_lineage(
+                table_name=table_name
+            )
+            return {
+                "table": table_name,
+                "upstream": [u.name for u in lineage.upstreams] if lineage.upstreams else [],
+                "downstream": [d.name for d in lineage.downstreams] if lineage.downstreams else []
+            }
+        except Exception as e:
+            return {"error": str(e), "table": table_name}
+    
+    def extract_column_lineage(self, table_name: str) -> List[ColumnNode]:
+        try:
+            lineage = self.client.lineage.get_column_lineage(
+                table_name=table_name
+            )
+            columns = []
+            if lineage and hasattr(lineage, 'columns'):
+                for col in lineage.columns:
+                    upstream = [u.name for u in col.upstreams] if hasattr(col, 'upstreams') else []
+                    columns.append(ColumnNode(
+                        name=col.name,
+                        table=table_name,
+                        data_type=col.data_type if hasattr(col, 'data_type') else 'unknown',
+                        upstream_columns=upstream
+                    ))
+            return columns
+        except Exception:
+            return []
+    
+    def extract_workspace_lineage(self, workspace_id: str) -> Dict:
+        tables = self.client.tables.list(catalog_name="main")
+        lineage_data = {"tables": [], "edges": []}
+        for table in tables:
+            table_lineage = self.extract_table_lineage(table.full_name)
+            if "error" not in table_lineage:
+                lineage_data["tables"].append({
+                    "id": table.full_name,
+                    "name": table.name,
+                    "metadata": {"workspace": workspace_id}
+                })
+                for upstream in table_lineage.get("upstream", []):
+                    lineage_data["edges"].append({
+                        "source": upstream,
+                        "target": table.full_name
+                    })
+        return lineage_data

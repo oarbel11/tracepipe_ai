@@ -1,59 +1,79 @@
 import networkx as nx
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Set, Optional
+from dataclasses import dataclass, field
+from enum import Enum
 
+class NodeType(Enum):
+    UC_TABLE = "unity_catalog_table"
+    UC_VOLUME = "unity_catalog_volume"
+    EXTERNAL_TABLE = "external_table"
+    BI_REPORT = "bi_report"
+    ORCHESTRATION = "orchestration"
+    NOTEBOOK = "notebook"
 
+@dataclass
 class LineageNode:
-    """Represents a node in the unified lineage graph"""
-    def __init__(self, node_id: str, node_type: str, platform: str, metadata: Optional[Dict] = None):
-        self.node_id = node_id
-        self.node_type = node_type
-        self.platform = platform
-        self.metadata = metadata or {}
+    id: str
+    name: str
+    node_type: NodeType
+    metadata: Dict = field(default_factory=dict)
 
-    def __repr__(self):
-        return f"LineageNode({self.node_id}, {self.platform})"
-
+@dataclass
+class LineageEdge:
+    source: str
+    target: str
+    edge_type: str = "direct"
+    metadata: Dict = field(default_factory=dict)
 
 class UnifiedLineageGraph:
-    """Unified cross-platform lineage graph"""
     def __init__(self):
         self.graph = nx.DiGraph()
-
-    def add_node(self, node: LineageNode):
-        """Add a node to the graph"""
-        self.graph.add_node(node.node_id, node_type=node.node_type, platform=node.platform, metadata=node.metadata)
-
-    def add_edge(self, source_id: str, target_id: str, edge_type: str = "transforms"):
-        """Add an edge between nodes"""
-        self.graph.add_edge(source_id, target_id, edge_type=edge_type)
-
-    def get_upstream(self, node_id: str) -> List[str]:
-        """Get all upstream dependencies"""
+        self.nodes: Dict[str, LineageNode] = {}
+    
+    def add_node(self, node: LineageNode) -> None:
+        self.nodes[node.id] = node
+        self.graph.add_node(node.id, **node.metadata)
+    
+    def add_edge(self, edge: LineageEdge) -> None:
+        self.graph.add_edge(edge.source, edge.target, 
+                           edge_type=edge.edge_type, **edge.metadata)
+    
+    def get_upstream(self, node_id: str, max_depth: Optional[int] = None) -> Set[str]:
         if node_id not in self.graph:
-            return []
-        return list(self.graph.predecessors(node_id))
-
-    def get_downstream(self, node_id: str) -> List[str]:
-        """Get all downstream dependencies"""
+            return set()
+        upstream = set()
+        if max_depth is None:
+            upstream = nx.ancestors(self.graph, node_id)
+        else:
+            for depth in range(1, max_depth + 1):
+                for node in list(upstream) + [node_id]:
+                    upstream.update(self.graph.predecessors(node))
+        return upstream
+    
+    def get_downstream(self, node_id: str, max_depth: Optional[int] = None) -> Set[str]:
         if node_id not in self.graph:
-            return []
-        return list(self.graph.successors(node_id))
-
-    def get_impact_analysis(self, node_id: str) -> Dict[str, List[str]]:
-        """Perform impact analysis for a node"""
-        return {"upstream": self.get_upstream(node_id), "downstream": self.get_downstream(node_id)}
-
-    def merge_lineage(self, external_graph: Dict[str, Any]):
-        """Merge external lineage into unified graph"""
-        for node in external_graph.get("nodes", []):
-            node_obj = LineageNode(node["id"], node.get("type", "table"), node.get("platform", "external"), node.get("metadata"))
-            self.add_node(node_obj)
-
-        for edge in external_graph.get("edges", []):
-            self.add_edge(edge["source"], edge["target"], edge.get("type", "transforms"))
-
-    def export_graph(self) -> Dict[str, Any]:
-        """Export graph as dictionary"""
-        nodes = [{"id": n, **self.graph.nodes[n]} for n in self.graph.nodes()]
-        edges = [{"source": u, "target": v, **self.graph.edges[u, v]} for u, v in self.graph.edges()]
-        return {"nodes": nodes, "edges": edges}
+            return set()
+        downstream = set()
+        if max_depth is None:
+            downstream = nx.descendants(self.graph, node_id)
+        else:
+            for depth in range(1, max_depth + 1):
+                for node in list(downstream) + [node_id]:
+                    downstream.update(self.graph.successors(node))
+        return downstream
+    
+    def get_impact_analysis(self, node_id: str) -> Dict:
+        return {
+            "node": self.nodes.get(node_id),
+            "upstream_count": len(self.get_upstream(node_id)),
+            "downstream_count": len(self.get_downstream(node_id)),
+            "downstream_nodes": list(self.get_downstream(node_id))
+        }
+    
+    def merge_from_unity_catalog(self, uc_lineage: Dict) -> None:
+        for table in uc_lineage.get("tables", []):
+            node = LineageNode(table["id"], table["name"], 
+                             NodeType.UC_TABLE, table.get("metadata", {}))
+            self.add_node(node)
+        for edge in uc_lineage.get("edges", []):
+            self.add_edge(LineageEdge(edge["source"], edge["target"]))
