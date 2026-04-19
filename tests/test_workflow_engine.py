@@ -1,69 +1,75 @@
 import pytest
-import os
-import tempfile
-import yaml
-from scripts.peer_review.workflow_engine import WorkflowEngine, PolicyEnforcer, NotificationService, AuditTrail
-from scripts.peer_review.peer_review import PeerReviewOrchestrator
+import json
+from tracepipe_ai import WorkflowEngine, PolicyEnforcer, NotificationService, AuditTrail, PeerReviewSystem, ApprovalStatus
 
 @pytest.fixture
-def temp_config():
-    config = {
-        "policies": [
-            {"id": "pii", "rule_type": "pii_check", "severity": "high", "message": "PII detected"},
-            {"id": "downstream", "rule_type": "downstream_limit", "max_downstream": 3, "message": "Too many downstream"}
-        ],
-        "notifications": {"slack": {"enabled": True}}
+def workflow_config():
+    return {
+        "policies": {
+            "max_rows_affected": 5000,
+            "blocked_operations": ["DROP"]
+        },
+        "approvals": {
+            "critical": ["senior_eng", "dba"],
+            "high": ["team_lead"],
+            "medium": ["peer"],
+            "low": []
+        },
+        "notifications": {
+            "enabled": True
+        }
     }
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml', delete=False) as f:
-        yaml.dump(config, f)
-        return f.name
 
-def test_policy_enforcer():
-    policies = [{"id": "p1", "rule_type": "pii_check", "message": "PII violation"}]
-    enforcer = PolicyEnforcer(policies)
-    result = enforcer.enforce({"pii_detected": True, "pii_approval": False})
-    assert result["blocked"] is True
-    assert len(result["violations"]) == 1
+@pytest.fixture
+def workflow_engine(workflow_config):
+    return WorkflowEngine(workflow_config)
+
+def test_policy_enforcer_compliant():
+    enforcer = PolicyEnforcer({"max_rows_affected": 1000})
+    result = enforcer.evaluate({"rows_affected": 500})
+    assert result["compliant"] is True
+    assert len(result["violations"]) == 0
+
+def test_policy_enforcer_violation():
+    enforcer = PolicyEnforcer({"max_rows_affected": 1000})
+    result = enforcer.evaluate({"rows_affected": 1500})
+    assert result["compliant"] is False
+    assert len(result["violations"]) > 0
+
+def test_policy_enforcer_blocked_operation():
+    enforcer = PolicyEnforcer({"blocked_operations": ["DROP"]})
+    result = enforcer.evaluate({"operation": "DROP"})
+    assert result["compliant"] is False
+
+def test_workflow_engine_blocks_noncompliant(workflow_engine):
+    change_data = {"id": "1", "operation": "UPDATE"}
+    impact_analysis = {"severity": "high", "rows_affected": 10000}
+    result = workflow_engine.process_change(change_data, impact_analysis)
+    assert result["status"] == ApprovalStatus.BLOCKED.value
+
+def test_workflow_engine_routes_approval(workflow_engine):
+    change_data = {"id": "2", "operation": "UPDATE"}
+    impact_analysis = {"severity": "high", "rows_affected": 2000}
+    result = workflow_engine.process_change(change_data, impact_analysis)
+    assert result["status"] == ApprovalStatus.PENDING.value
+    assert "team_lead" in result["approvers"]
 
 def test_notification_service():
-    service = NotificationService({"slack": {"enabled": True}})
-    notification = service.send(["user@test.com"], "Test message", "slack")
-    assert notification["status"] == "sent"
+    service = NotificationService({"enabled": True})
+    service.send_alert("Test Alert", {"detail": "test"})
     assert len(service.sent_notifications) == 1
+    assert service.sent_notifications[0]["type"] == "alert"
 
 def test_audit_trail():
-    audit = AuditTrail()
-    audit.log("PR-1", "started", "user", {"test": "data"})
-    audit.log("PR-1", "approved", "admin", {"result": "pass"})
-    trail = audit.get_trail("PR-1")
-    assert len(trail) == 2
-    assert trail[0]["action"] == "started"
+    trail = AuditTrail()
+    trail.log("APPROVED", {"id": "1"}, {"approver": "user1"})
+    logs = trail.get_logs()
+    assert len(logs) == 1
+    assert logs[0]["action"] == "APPROVED"
 
-def test_workflow_engine(temp_config):
-    engine = WorkflowEngine(temp_config)
-    result = engine.execute_workflow("PR-123", {"pii_detected": False, "downstream_count": 2}, "author@test.com")
-    assert result["approved"] is True
-    trail = engine.get_audit_trail("PR-123")
-    assert len(trail) > 0
-
-def test_workflow_blocks_violations(temp_config):
-    engine = WorkflowEngine(temp_config)
-    result = engine.execute_workflow("PR-124", {"pii_detected": True, "pii_approval": False}, "author@test.com")
-    assert result["approved"] is False
-    assert "violations" in result["reason"]
-
-def test_peer_review_orchestrator(temp_config):
-    orchestrator = PeerReviewOrchestrator(temp_config)
-    result = orchestrator.review_change(
-        "PR-125",
-        {"columns": ["name", "email"], "downstream_count": 2},
-        "dev@test.com"
-    )
+def test_peer_review_integration(workflow_config):
+    system = PeerReviewSystem(workflow_config)
+    change = {"operation": "UPDATE", "rows_affected": 200}
+    result = system.review_change(change)
     assert "impact_analysis" in result
-    assert result["impact_analysis"]["pii_detected"] is True
-
-def test_get_review_status(temp_config):
-    orchestrator = PeerReviewOrchestrator(temp_config)
-    orchestrator.review_change("PR-126", {"downstream_count": 1}, "dev@test.com")
-    status = orchestrator.get_review_status("PR-126")
-    assert status["status"] in ["workflow_started", "approval_requested"]
+    assert "workflow_result" in result
