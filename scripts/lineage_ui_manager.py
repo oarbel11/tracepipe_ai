@@ -1,115 +1,71 @@
-import duckdb
 import networkx as nx
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 
 class LineageUIManager:
-    def __init__(self, db_path: str = "lineage_store.duckdb"):
-        self.db_path = db_path
-        self.conn = duckdb.connect(db_path)
-        self._init_schema()
+    def __init__(self):
         self.graph = nx.DiGraph()
-        self._load_graph()
+        self.storage = {}
+        self.metadata = {}
+        self.lineage_id_counter = 0
 
-    def _init_schema(self):
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS lineage_edges (
-                id INTEGER PRIMARY KEY,
-                source_asset VARCHAR,
-                target_asset VARCHAR,
-                transform_logic TEXT,
-                created_at TIMESTAMP,
-                is_active BOOLEAN DEFAULT true
-            )
-        """)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS asset_metadata (
-                asset_id VARCHAR PRIMARY KEY,
-                classifications TEXT,
-                business_terms TEXT,
-                tags TEXT,
-                masking_policy VARCHAR,
-                last_updated TIMESTAMP
-            )
-        """)
-        self.conn.execute("""
-            CREATE SEQUENCE IF NOT EXISTS lineage_id_seq START 1
-        """)
+    def add_lineage(self, source: str, target: str, metadata: Optional[Dict] = None) -> int:
+        self.lineage_id_counter += 1
+        lineage_id = self.lineage_id_counter
+        self.graph.add_edge(source, target)
+        edge_data = metadata or {}
+        edge_data['lineage_id'] = lineage_id
+        edge_data['created_at'] = datetime.now().isoformat()
+        self.graph[source][target].update(edge_data)
+        self.storage[lineage_id] = {'source': source, 'target': target, 'metadata': edge_data}
+        return lineage_id
 
-    def _load_graph(self):
-        edges = self.conn.execute(
-            "SELECT source_asset, target_asset FROM lineage_edges WHERE is_active"
-        ).fetchall()
-        for source, target in edges:
-            self.graph.add_edge(source, target)
+    def get_lineage(self, node: str, direction: str = 'both') -> Dict[str, Any]:
+        result = {'node': node, 'upstream': [], 'downstream': []}
+        if node not in self.graph:
+            return result
+        if direction in ['upstream', 'both']:
+            result['upstream'] = list(self.graph.predecessors(node))
+        if direction in ['downstream', 'both']:
+            result['downstream'] = list(self.graph.successors(node))
+        return result
 
-    def add_lineage_edge(self, source: str, target: str, transform: str = ""):
-        self.conn.execute("""
-            INSERT INTO lineage_edges (id, source_asset, target_asset, transform_logic, created_at)
-            VALUES (nextval('lineage_id_seq'), ?, ?, ?, ?)
-        """, [source, target, transform, datetime.now()])
-        self.graph.add_edge(source, target, transform=transform)
+    def get_all_lineage(self) -> List[Dict[str, Any]]:
+        return [v for v in self.storage.values()]
 
-    def apply_classification(self, asset_id: str, classification: str, reason: str = ""):
-        existing = self.conn.execute(
-            "SELECT classifications FROM asset_metadata WHERE asset_id = ?", [asset_id]
-        ).fetchone()
-        if existing:
-            classifications = json.loads(existing[0]) if existing[0] else []
-            classifications.append({"type": classification, "reason": reason})
-            self.conn.execute(
-                "UPDATE asset_metadata SET classifications = ?, last_updated = ? WHERE asset_id = ?",
-                [json.dumps(classifications), datetime.now(), asset_id]
-            )
-        else:
-            self.conn.execute("""
-                INSERT INTO asset_metadata (asset_id, classifications, last_updated)
-                VALUES (?, ?, ?)
-            """, [asset_id, json.dumps([{"type": classification, "reason": reason}]), datetime.now()])
+    def delete_lineage(self, lineage_id: int) -> bool:
+        if lineage_id not in self.storage:
+            return False
+        edge_info = self.storage[lineage_id]
+        if self.graph.has_edge(edge_info['source'], edge_info['target']):
+            self.graph.remove_edge(edge_info['source'], edge_info['target'])
+        del self.storage[lineage_id]
+        return True
 
-    def add_business_term(self, asset_id: str, term: str):
-        existing = self.conn.execute(
-            "SELECT business_terms FROM asset_metadata WHERE asset_id = ?", [asset_id]
-        ).fetchone()
-        terms = json.loads(existing[0]) if existing and existing[0] else []
-        terms.append(term)
-        if existing:
-            self.conn.execute(
-                "UPDATE asset_metadata SET business_terms = ? WHERE asset_id = ?",
-                [json.dumps(terms), asset_id]
-            )
-        else:
-            self.conn.execute(
-                "INSERT INTO asset_metadata (asset_id, business_terms) VALUES (?, ?)",
-                [asset_id, json.dumps(terms)]
-            )
-
-    def analyze_schema_change_impact(self, asset_id: str, changes: List[str]) -> Dict:
-        downstream = list(nx.descendants(self.graph, asset_id)) if asset_id in self.graph else []
-        upstream = list(nx.ancestors(self.graph, asset_id)) if asset_id in self.graph else []
-        return {
-            "affected_assets": downstream,
-            "dependent_count": len(downstream),
-            "upstream_assets": upstream,
-            "changes": changes,
-            "risk_level": "high" if len(downstream) > 5 else "medium" if len(downstream) > 0 else "low"
-        }
-
-    def export_visualization_data(self) -> Dict:
-        nodes = []
-        edges = []
+    def detect_lineage_issues(self) -> List[Dict[str, Any]]:
+        issues = []
         for node in self.graph.nodes():
-            metadata = self.conn.execute(
-                "SELECT classifications, business_terms, tags FROM asset_metadata WHERE asset_id = ?",
-                [node]
-            ).fetchone()
-            nodes.append({
-                "id": node,
-                "classifications": json.loads(metadata[0]) if metadata and metadata[0] else [],
-                "business_terms": json.loads(metadata[1]) if metadata and metadata[1] else [],
-                "tags": json.loads(metadata[2]) if metadata and metadata[2] else []
-            })
-        for source, target in self.graph.edges():
-            edges.append({"source": source, "target": target})
-        return {"nodes": nodes, "edges": edges}
+            if self.graph.in_degree(node) == 0 and self.graph.out_degree(node) == 0:
+                issues.append({'type': 'orphan', 'node': node, 'message': f'Orphan node: {node}'})
+        try:
+            cycles = list(nx.simple_cycles(self.graph))
+            for cycle in cycles:
+                issues.append({'type': 'cycle', 'nodes': cycle, 'message': f'Cycle detected: {cycle}'})
+        except:
+            pass
+        return issues
+
+    def export_lineage(self) -> str:
+        data = {'nodes': list(self.graph.nodes()), 'edges': self.get_all_lineage(), 'metadata': self.metadata}
+        return json.dumps(data, indent=2)
+
+    def import_lineage(self, json_data: str) -> bool:
+        try:
+            data = json.loads(json_data)
+            for edge in data.get('edges', []):
+                self.add_lineage(edge['source'], edge['target'], edge.get('metadata'))
+            self.metadata.update(data.get('metadata', {}))
+            return True
+        except:
+            return False
