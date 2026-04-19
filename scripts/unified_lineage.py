@@ -1,79 +1,94 @@
-import networkx as nx
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
+import json
+
+try:
+    import networkx as nx
+    HAS_NETWORKX = True
+except ImportError:
+    HAS_NETWORKX = False
 
 class NodeType(Enum):
-    UC_TABLE = "unity_catalog_table"
-    UC_VOLUME = "unity_catalog_volume"
-    EXTERNAL_TABLE = "external_table"
-    BI_REPORT = "bi_report"
-    ORCHESTRATION = "orchestration"
+    TABLE = "table"
+    VIEW = "view"
+    COLUMN = "column"
     NOTEBOOK = "notebook"
+    DASHBOARD = "dashboard"
+    EXTERNAL = "external"
 
 @dataclass
 class LineageNode:
     id: str
     name: str
     node_type: NodeType
-    metadata: Dict = field(default_factory=dict)
+    workspace: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class LineageEdge:
-    source: str
-    target: str
-    edge_type: str = "direct"
-    metadata: Dict = field(default_factory=dict)
+    source_id: str
+    target_id: str
+    edge_type: str = "depends_on"
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 class UnifiedLineageGraph:
     def __init__(self):
-        self.graph = nx.DiGraph()
         self.nodes: Dict[str, LineageNode] = {}
+        self.edges: List[LineageEdge] = []
+        self.graph = nx.DiGraph() if HAS_NETWORKX else None
     
-    def add_node(self, node: LineageNode) -> None:
+    def add_node(self, node: LineageNode):
         self.nodes[node.id] = node
-        self.graph.add_node(node.id, **node.metadata)
+        if self.graph is not None:
+            self.graph.add_node(node.id, **node.__dict__)
     
-    def add_edge(self, edge: LineageEdge) -> None:
-        self.graph.add_edge(edge.source, edge.target, 
-                           edge_type=edge.edge_type, **edge.metadata)
+    def add_edge(self, edge: LineageEdge):
+        self.edges.append(edge)
+        if self.graph is not None:
+            self.graph.add_edge(edge.source_id, edge.target_id, **edge.__dict__)
     
-    def get_upstream(self, node_id: str, max_depth: Optional[int] = None) -> Set[str]:
-        if node_id not in self.graph:
-            return set()
-        upstream = set()
-        if max_depth is None:
-            upstream = nx.ancestors(self.graph, node_id)
-        else:
-            for depth in range(1, max_depth + 1):
-                for node in list(upstream) + [node_id]:
-                    upstream.update(self.graph.predecessors(node))
-        return upstream
+    def get_upstream(self, node_id: str, depth: int = -1) -> Set[str]:
+        if self.graph is not None:
+            if node_id not in self.graph:
+                return set()
+            if depth == -1:
+                return set(nx.ancestors(self.graph, node_id))
+            upstream = set()
+            self._get_ancestors_bfs(node_id, depth, upstream, is_upstream=True)
+            return upstream
+        return self._get_manual_upstream(node_id, depth)
     
-    def get_downstream(self, node_id: str, max_depth: Optional[int] = None) -> Set[str]:
-        if node_id not in self.graph:
-            return set()
-        downstream = set()
-        if max_depth is None:
-            downstream = nx.descendants(self.graph, node_id)
-        else:
-            for depth in range(1, max_depth + 1):
-                for node in list(downstream) + [node_id]:
-                    downstream.update(self.graph.successors(node))
-        return downstream
+    def get_downstream(self, node_id: str, depth: int = -1) -> Set[str]:
+        if self.graph is not None:
+            if node_id not in self.graph:
+                return set()
+            if depth == -1:
+                return set(nx.descendants(self.graph, node_id))
+            downstream = set()
+            self._get_ancestors_bfs(node_id, depth, downstream, is_upstream=False)
+            return downstream
+        return self._get_manual_downstream(node_id, depth)
     
-    def get_impact_analysis(self, node_id: str) -> Dict:
-        return {
-            "node": self.nodes.get(node_id),
-            "upstream_count": len(self.get_upstream(node_id)),
-            "downstream_count": len(self.get_downstream(node_id)),
-            "downstream_nodes": list(self.get_downstream(node_id))
-        }
+    def _get_ancestors_bfs(self, node_id: str, depth: int, result: Set[str], is_upstream: bool):
+        if depth == 0:
+            return
+        neighbors = list(self.graph.predecessors(node_id)) if is_upstream else list(self.graph.successors(node_id))
+        for neighbor in neighbors:
+            if neighbor not in result:
+                result.add(neighbor)
+                self._get_ancestors_bfs(neighbor, depth - 1, result, is_upstream)
     
-    def merge_from_unity_catalog(self, uc_lineage: Dict) -> None:
-        for table in uc_lineage.get("tables", []):
-            node = LineageNode(table["id"], table["name"], 
-                             NodeType.UC_TABLE, table.get("metadata", {}))
-            self.add_node(node)
-        for edge in uc_lineage.get("edges", []):
-            self.add_edge(LineageEdge(edge["source"], edge["target"]))
+    def _get_manual_upstream(self, node_id: str, depth: int) -> Set[str]:
+        result = set()
+        for edge in self.edges:
+            if edge.target_id == node_id:
+                result.add(edge.source_id)
+        return result
+    
+    def _get_manual_downstream(self, node_id: str, depth: int) -> Set[str]:
+        result = set()
+        for edge in self.edges:
+            if edge.source_id == node_id:
+                result.add(edge.target_id)
+        return result
