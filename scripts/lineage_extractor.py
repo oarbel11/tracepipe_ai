@@ -1,80 +1,43 @@
-from typing import Dict, List, Set, Optional
-
-class ColumnNode:
-    def __init__(self, dataframe: str, column: str):
-        self.dataframe = dataframe
-        self.column = column
-        self.dependencies = []
-
-    def __repr__(self):
-        return f"{self.dataframe}.{self.column}"
-
-    def __eq__(self, other):
-        if not isinstance(other, ColumnNode):
-            return False
-        return self.dataframe == other.dataframe and self.column == other.column
-
-    def __hash__(self):
-        return hash((self.dataframe, self.column))
+from typing import Dict, List, Optional
+import re
 
 class LineageExtractor:
-    def __init__(self, parsed_data: Dict):
-        self.parsed_data = parsed_data
-        self.nodes = {}
-        self.edges = []
+    def __init__(self):
+        self.lineage_map: Dict[str, List[str]] = {}
 
-    def build_lineage(self) -> Dict[str, List[ColumnNode]]:
-        operations = self.parsed_data.get('operations', [])
-        for op in operations:
-            self._process_operation(op)
-        return self._build_lineage_dict()
+    def extract_from_sql(self, sql: str, target_table: str) -> List[str]:
+        upstream = []
+        from_pattern = r'FROM\s+([\w.]+)'
+        join_pattern = r'JOIN\s+([\w.]+)'
+        from_matches = re.findall(from_pattern, sql, re.IGNORECASE)
+        join_matches = re.findall(join_pattern, sql, re.IGNORECASE)
+        upstream.extend(from_matches)
+        upstream.extend(join_matches)
+        self.lineage_map[target_table] = list(set(upstream))
+        return upstream
 
-    def _process_operation(self, op: Dict):
-        target_df = op['target']
-        source_df = op.get('source')
-        operation = op['operation']
-        columns = op.get('columns', [])
+    def extract_from_spark_plan(self, plan: str) -> Dict[str, List[str]]:
+        lineage = {}
+        relation_pattern = r'Relation\[.*?\]\s+([\w.]+)'
+        relations = re.findall(relation_pattern, plan)
+        if relations:
+            lineage['sources'] = list(set(relations))
+        return lineage
 
-        if operation == 'select':
-            for col in columns:
-                target_node = self._get_or_create_node(target_df, col)
-                if source_df:
-                    source_node = self._get_or_create_node(source_df, col)
-                    target_node.dependencies.append(source_node)
-                    self.edges.append((source_node, target_node))
-        elif operation == 'withColumn':
-            if columns:
-                target_col = columns[0]
-                target_node = self._get_or_create_node(target_df, target_col)
-                if source_df:
-                    for col in columns[1:]:
-                        source_node = self._get_or_create_node(source_df, col)
-                        target_node.dependencies.append(source_node)
-                        self.edges.append((source_node, target_node))
+    def get_lineage(self, table: str) -> List[str]:
+        return self.lineage_map.get(table, [])
 
-    def _get_or_create_node(self, df: str, col: str) -> ColumnNode:
-        key = f"{df}.{col}"
-        if key not in self.nodes:
-            self.nodes[key] = ColumnNode(df, col)
-        return self.nodes[key]
+    def get_all_lineage(self) -> Dict[str, List[str]]:
+        return self.lineage_map
 
-    def _build_lineage_dict(self) -> Dict[str, List[ColumnNode]]:
-        result = {}
-        for key, node in self.nodes.items():
-            result[key] = node.dependencies
-        return result
-
-    def get_upstream_columns(self, df: str, col: str) -> List[ColumnNode]:
-        node = self.nodes.get(f"{df}.{col}")
-        if not node:
+    def build_dependency_chain(self, table: str, visited: Optional[set] = None) -> List[str]:
+        if visited is None:
+            visited = set()
+        if table in visited:
             return []
-        return self._get_all_upstream(node, set())
-
-    def _get_all_upstream(self, node: ColumnNode, visited: Set) -> List[ColumnNode]:
-        if node in visited:
-            return []
-        visited.add(node)
-        result = list(node.dependencies)
-        for dep in node.dependencies:
-            result.extend(self._get_all_upstream(dep, visited))
-        return result
+        visited.add(table)
+        chain = [table]
+        upstream = self.lineage_map.get(table, [])
+        for upstream_table in upstream:
+            chain.extend(self.build_dependency_chain(upstream_table, visited))
+        return chain
