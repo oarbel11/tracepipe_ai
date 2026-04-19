@@ -1,83 +1,58 @@
 import pytest
-import json
+import sys
 from scripts.lineage_ui_manager import LineageUIManager
-from scripts.governance_ui_manager import GovernanceUIManager
-from scripts.impact_analysis_visualizer import ImpactAnalysisVisualizer
 
-def test_lineage_manager_add_and_get():
+def test_add_lineage():
     manager = LineageUIManager()
-    lid = manager.add_lineage('table_a', 'table_b', {'type': 'transform'})
-    assert lid > 0
-    lineage = manager.get_lineage('table_a')
-    assert 'table_b' in lineage['downstream']
+    manager.add_lineage("table_a", "table_b")
+    assert "table_a" in manager.lineage_graph.nodes()
+    assert "table_b" in manager.lineage_graph.nodes()
 
-def test_lineage_persistence():
+def test_get_upstream():
     manager = LineageUIManager()
-    manager.add_lineage('source1', 'target1')
-    manager.add_lineage('source2', 'target2')
-    all_lineage = manager.get_all_lineage()
-    assert len(all_lineage) == 2
+    manager.add_lineage("table_a", "table_b")
+    manager.add_lineage("table_b", "table_c")
+    upstream = manager.get_upstream("table_c")
+    assert "table_a" in upstream
+    assert "table_b" in upstream
 
-def test_lineage_delete():
+def test_get_downstream():
     manager = LineageUIManager()
-    lid = manager.add_lineage('a', 'b')
-    assert manager.delete_lineage(lid)
-    assert not manager.delete_lineage(lid)
+    manager.add_lineage("table_a", "table_b")
+    manager.add_lineage("table_b", "table_c")
+    downstream = manager.get_downstream("table_a")
+    assert "table_b" in downstream
+    assert "table_c" in downstream
 
-def test_lineage_issue_detection():
+def test_analyze_impact():
     manager = LineageUIManager()
-    manager.add_lineage('a', 'b')
-    manager.add_lineage('b', 'c')
-    manager.add_lineage('c', 'a')
-    issues = manager.detect_lineage_issues()
+    manager.add_lineage("table_a", "table_b")
+    manager.add_lineage("table_b", "table_c")
+    impact = manager.analyze_impact("table_a", "schema_change")
+    assert impact["impact_count"] == 2
+    assert "table_b" in impact["affected_nodes"]
+
+def test_add_governance():
+    manager = LineageUIManager()
+    manager.add_governance("table_a", "classification", "PII")
+    gov = manager.get_governance("table_a")
+    assert gov["classification"] == "PII"
+
+def test_add_annotation():
+    manager = LineageUIManager()
+    manager.add_annotation("table_a", "This is a test")
+    assert len(manager.annotations["table_a"]) == 1
+
+def test_detect_issues():
+    manager = LineageUIManager()
+    manager.lineage_graph.add_node("isolated_table")
+    issues = manager.detect_issues()
     assert len(issues) > 0
+    assert issues[0]["type"] == "isolated_node"
 
-def test_lineage_export_import():
+def test_export_lineage():
     manager = LineageUIManager()
-    manager.add_lineage('x', 'y')
-    exported = manager.export_lineage()
-    new_manager = LineageUIManager()
-    assert new_manager.import_lineage(exported)
-
-def test_governance_policy_management():
-    gov = GovernanceUIManager()
-    pid = gov.add_policy('mask_pii', 'masking', {'columns': ['ssn', 'email']})
-    assert pid > 0
-    policy = gov.get_policy(pid)
-    assert policy['name'] == 'mask_pii'
-    assert gov.update_policy(pid, {'enabled': False})
-    assert gov.delete_policy(pid)
-
-def test_governance_tags():
-    gov = GovernanceUIManager()
-    assert gov.apply_tag('table1', 'pii', True)
-    tags = gov.get_tags('table1')
-    assert tags['pii'] is True
-    assert gov.remove_tag('table1', 'pii')
-
-def test_governance_classification():
-    gov = GovernanceUIManager()
-    assert gov.set_classification('table1', 'confidential')
-    assert gov.get_classification('table1') == 'confidential'
-
-def test_governance_glossary():
-    gov = GovernanceUIManager()
-    assert gov.add_glossary_term('revenue', 'Total income')
-    term = gov.get_glossary_term('revenue')
-    assert term['definition'] == 'Total income'
-
-def test_impact_analysis():
-    manager = LineageUIManager()
-    manager.add_lineage('a', 'b')
-    manager.add_lineage('b', 'c')
-    visualizer = ImpactAnalysisVisualizer(manager)
-    impact = visualizer.analyze_impact('a', 'schema_change')
-    assert impact['impact_count'] >= 0
-
-def test_blast_radius():
-    manager = LineageUIManager()
-    manager.add_lineage('root', 'child1')
-    manager.add_lineage('root', 'child2')
-    visualizer = ImpactAnalysisVisualizer(manager)
-    radius = visualizer.calculate_blast_radius('root')
-    assert radius['direct_downstream'] == 2
+    manager.add_lineage("table_a", "table_b")
+    export = manager.export_lineage()
+    assert "table_a" in export
+    assert "table_b" in export
