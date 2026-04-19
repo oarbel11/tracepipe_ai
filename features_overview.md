@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #36 — Enhanced Interactive Lineage & Governance UI
+
+**What it is & why it matters:**
+Databricks users face challenges with the current UI for advanced lineage exploration and governance, often resorting to SQL for tasks like annotations or applying policies. Furthermore, lineage can be fragile, breaking when notebooks are moved or sometimes appearing inconsistent after repeated job runs. This feature will deliver a highly interactive UI for exploring complex lineage, enabling visual 'what-if' impact analysis for schema changes, and providing intuitive tools for non-technical users to directly manage governance aspects like data classifications, business glossary terms, and data masking policies without writing code. It will also highlight and assist in resolving common lineage integrity issues.
+
+**How to use it:**
+
+See `tests/test_lineage_ui.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/46)
