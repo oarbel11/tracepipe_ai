@@ -1,92 +1,133 @@
 import pytest
-from scripts.peer_review.governance_policy import GovernancePolicy, PolicyViolation
-from scripts.peer_review.policy_enforcement import PolicyViolationDetector, EnforcementEngine
-from scripts.peer_review.interactive_enforcement import InteractiveLineageEnforcement
+from tracepipe.governance.governance_policy import (
+    GovernancePolicy,
+    PolicySeverity,
+)
+from tracepipe.governance.policy_enforcement import (
+    PolicyViolationDetector,
+    EnforcementEngine,
+)
+from tracepipe.governance.compliance_dashboard import ComplianceDashboard
+from tracepipe.lineage.interactive_lineage import InteractiveLineageGraph
+
 
 def test_policy_violation_detection():
-    policy = GovernancePolicy(
-        policy_id='PII_001',
-        name='PII Protection',
-        tags=['pii'],
-        severity='high',
-        rules={'has_masking': 'true'}
-    )
-    detector = PolicyViolationDetector([policy])
-    assets = [
-        {'id': 'users_table', 'tags': ['pii'], 'has_masking': False},
-        {'id': 'orders_table', 'tags': ['transactional'], 'has_masking': False}
+    policies = [
+        GovernancePolicy(
+            policy_id="P1",
+            name="Policy 1",
+            description="PII policy",
+            tags=["pii"],
+            severity=PolicySeverity.HIGH,
+        )
     ]
-    violations = detector.detect_violations(assets)
+    detector = PolicyViolationDetector(policies)
+    violations = detector.check_asset("A1", "Asset 1", ["pii"])
     assert len(violations) == 1
-    assert violations[0].asset_id == 'users_table'
-    assert violations[0].policy.severity == 'high'
+    assert violations[0].policy.policy_id == "P1"
+
 
 def test_high_risk_asset_detection():
-    policy = GovernancePolicy(policy_id='TEST_001', name='Test', tags=[])
-    detector = PolicyViolationDetector([policy])
-    assets = [{'id': 'table_a'}, {'id': 'table_b'}]
-    upstream_changes = {'table_a': ['source_1', 'source_2']}
-    high_risk = detector.get_high_risk_assets(assets, upstream_changes)
-    assert len(high_risk) == 1
-    assert high_risk[0]['id'] == 'table_a'
-    assert len(high_risk[0]['changed_dependencies']) == 2
+    policies = [
+        GovernancePolicy(
+            policy_id="P2",
+            name="Critical Policy",
+            description="Critical data",
+            tags=["critical"],
+            severity=PolicySeverity.CRITICAL,
+        )
+    ]
+    detector = PolicyViolationDetector(policies)
+    engine = EnforcementEngine()
+    violations = detector.check_asset("A2", "Asset 2", ["critical"])
+    engine.process_violations(violations)
+    high_risk = engine.get_high_risk_assets()
+    assert "A2" in high_risk
+
 
 def test_enforcement_engine_alerts():
-    alert_triggered = []
-    def mock_handler(alert):
-        alert_triggered.append(alert)
-    
+    policies = [
+        GovernancePolicy(
+            policy_id="P3",
+            name="Alert Policy",
+            description="Alert test",
+            tags=["sensitive"],
+        )
+    ]
+    detector = PolicyViolationDetector(policies)
     engine = EnforcementEngine()
-    engine.register_alert_handler(mock_handler)
-    
-    policy = GovernancePolicy(policy_id='TEST', name='Test Policy', severity='medium')
-    violation = PolicyViolation(policy, 'asset_1', ['Missing masking'], '2024-01-01')
-    alert = engine.trigger_alert(violation)
-    
-    assert len(alert_triggered) == 1
-    assert alert_triggered[0]['severity'] == 'medium'
-    assert alert_triggered[0]['asset_id'] == 'asset_1'
+    violations = detector.check_asset("A3", "Asset 3", ["sensitive"])
+    engine.process_violations(violations)
+    assert len(engine.alerts) == 1
+
 
 def test_remediation_suggestions():
+    policies = [
+        GovernancePolicy(
+            policy_id="P4",
+            name="Auto Policy",
+            description="Auto remediate",
+            tags=["auto"],
+            auto_remediate=True,
+        )
+    ]
+    detector = PolicyViolationDetector(policies)
     engine = EnforcementEngine()
-    policy = GovernancePolicy(policy_id='PII_001', name='PII', tags=['pii'], severity='high')
-    violation = PolicyViolation(policy, 'users_table', ['No masking'], '2024-01-01')
-    suggestions = engine.suggest_remediation(violation)
-    assert len(suggestions) > 0
-    assert suggestions[0].action_type == 'mask_data'
+    violations = detector.check_asset("A4", "Asset 4", ["auto"])
+    engine.process_violations(violations)
+    assert len(engine.actions) == 1
+
 
 def test_interactive_lineage_enforcement():
+    graph = InteractiveLineageGraph()
+    graph.add_node("N1", "Node 1", ["pii"])
     policies = [
-        GovernancePolicy(policy_id='PII_001', name='PII', tags=['pii'], 
-                        severity='high', rules={'has_masking': 'true'})
+        GovernancePolicy(
+            policy_id="P5",
+            name="Lineage Policy",
+            description="Test",
+            tags=["pii"],
+        )
     ]
-    enforcer = InteractiveLineageEnforcement(policies)
-    assets = [{'id': 'users', 'tags': ['pii'], 'has_masking': False}]
-    
-    analysis = enforcer.analyze_lineage_graph(assets)
-    assert analysis['total_violations'] == 1
-    assert analysis['critical_violations'] == 1
+    graph.attach_policy_enforcement(policies)
+    graph.scan_for_violations()
+    violations = graph.get_violations_for_node("N1")
+    assert len(violations) == 1
+
 
 def test_visualization_highlights():
-    policies = [GovernancePolicy(policy_id='Q_001', name='Quality', tags=['quality'], 
-                                 severity='medium', rules={'has_validation': 'true'})]
-    enforcer = InteractiveLineageEnforcement(policies)
-    assets = [{'id': 'orders', 'tags': ['quality'], 'has_validation': False}]
-    
-    highlights = enforcer.get_visualization_highlights(assets)
-    assert 'orders' in highlights['violation_nodes']
-    assert highlights['severity_map']['orders'] == 'medium'
+    graph = InteractiveLineageGraph()
+    graph.add_node("N2", "Node 2", ["critical"])
+    policies = [
+        GovernancePolicy(
+            policy_id="P6",
+            name="Viz Policy",
+            description="Visual",
+            tags=["critical"],
+            severity=PolicySeverity.HIGH,
+        )
+    ]
+    graph.attach_policy_enforcement(policies)
+    graph.scan_for_violations()
+    viz = graph.get_node_visualization_data("N2")
+    assert viz["highlight"] == "high_risk"
+
 
 def test_compliance_dashboard():
-    policies = [GovernancePolicy(policy_id='P1', name='Policy 1', tags=['pii'], 
-                                 severity='high', rules={'encrypted': 'true'})]
-    enforcer = InteractiveLineageEnforcement(policies)
-    assets = [
-        {'id': 'a1', 'tags': ['pii'], 'encrypted': True},
-        {'id': 'a2', 'tags': ['pii'], 'encrypted': False}
+    engine = EnforcementEngine()
+    policies = [
+        GovernancePolicy(
+            policy_id="P7",
+            name="Dashboard Policy",
+            description="Test",
+            tags=["data"],
+            severity=PolicySeverity.CRITICAL,
+        )
     ]
-    dashboard = enforcer.get_compliance_dashboard(assets)
-    assert dashboard['total_assets'] == 2
-    assert dashboard['compliant_assets'] == 1
-    assert dashboard['compliance_rate'] == 50.0
-    assert dashboard['requires_immediate_action'] == 1
+    detector = PolicyViolationDetector(policies)
+    violations = detector.check_asset("A7", "Asset 7", ["data"])
+    engine.process_violations(violations)
+    dashboard = ComplianceDashboard(engine)
+    summary = dashboard.get_summary()
+    assert summary["total_violations"] == 1
+    assert summary["violations_by_severity"]["critical"] == 1
