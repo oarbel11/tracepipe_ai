@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #43 — Automated Policy Enforcement and Workflow Integration for Data Changes
+
+**What it is & why it matters:**
+The current 'AI-assisted peer review workflow with automated impact analysis feedback' is a strong foundation. However, production-grade solutions require moving beyond mere 'feedback' to active 'orchestration and enforcement'. This means integrating the impact analysis directly into a configurable workflow that can automatically enforce governance policies, trigger multi-step approvals, and block non-compliant changes from deployment, ensuring data integrity and compliance at scale.
+
+**How to use it:**
+
+See `tests/test_workflow_engine.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/53)
