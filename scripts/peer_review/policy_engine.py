@@ -1,58 +1,57 @@
-from typing import Dict, List, Optional
-from dataclasses import dataclass
-from scripts.peer_review.governance_policy import GovernancePolicy
-import json
-
-@dataclass
-class PolicyViolation:
-    policy_id: str
-    asset_id: str
-    severity: str
-    description: str
-    metadata: Dict
-
-    def to_dict(self) -> Dict:
-        return {
-            'policy_id': self.policy_id,
-            'asset_id': self.asset_id,
-            'severity': self.severity,
-            'description': self.description,
-            'metadata': self.metadata
-        }
-
 class PolicyEngine:
-    def __init__(self):
-        self.policies: Dict[str, GovernancePolicy] = {}
+    def __init__(self, graph_store):
+        self.graph_store = graph_store
+        self.policies = []
 
-    def add_policy(self, policy: GovernancePolicy):
-        self.policies[policy.policy_id] = policy
+    def add_policy(self, policy):
+        self.policies.append(policy)
 
-    def remove_policy(self, policy_id: str):
-        if policy_id in self.policies:
-            del self.policies[policy_id]
-
-    def evaluate_asset(self, asset_id: str, tags: List[str], metadata: Dict) -> List[PolicyViolation]:
+    def evaluate_policies(self):
         violations = []
-        for policy in self.policies.values():
-            if policy.matches_asset(tags, asset_id):
-                if self._check_violation(policy, metadata):
-                    violations.append(PolicyViolation(
-                        policy_id=policy.policy_id,
-                        asset_id=asset_id,
-                        severity=policy.severity,
-                        description=f"Policy '{policy.name}' violated",
-                        metadata={'rules': policy.rules, 'asset_metadata': metadata}
-                    ))
+        for policy in self.policies:
+            policy_violations = self._evaluate_policy(policy)
+            violations.extend(policy_violations)
         return violations
 
-    def _check_violation(self, policy: GovernancePolicy, metadata: Dict) -> bool:
-        for rule_key, rule_value in policy.rules.items():
-            asset_value = str(metadata.get(rule_key, ''))
-            if rule_value.lower() == 'true' and asset_value.lower() != 'true':
-                continue
-            if rule_value != asset_value:
-                return True
-        return len(policy.rules) > 0
+    def _evaluate_policy(self, policy):
+        violations = []
+        policy_type = policy.get('type')
+        
+        if policy_type == 'pii_compliance':
+            violations = self._check_pii_compliance(policy)
+        elif policy_type == 'data_quality':
+            violations = self._check_data_quality(policy)
+        elif policy_type == 'access_control':
+            violations = self._check_access_control(policy)
+        
+        return violations
 
-    def get_all_policies(self) -> List[GovernancePolicy]:
-        return list(self.policies.values())
+    def _check_pii_compliance(self, policy):
+        violations = []
+        target_type = policy.get('target_type', 'table')
+        nodes = self.graph_store.get_nodes_by_type(target_type)
+        
+        for node in nodes:
+            metadata = node.get('metadata', {})
+            has_pii = metadata.get('has_pii', False)
+            is_compliant = metadata.get('compliant_location', True)
+            
+            if has_pii and not is_compliant:
+                violations.append({
+                    'node_id': node['id'],
+                    'policy_id': policy.get('id'),
+                    'policy_type': 'pii_compliance',
+                    'severity': policy.get('severity', 'high'),
+                    'message': f"PII detected in non-compliant location: {node['id']}",
+                    'remediation': policy.get('remediation', 'mask')
+                })
+        
+        return violations
+
+    def _check_data_quality(self, policy):
+        violations = []
+        return violations
+
+    def _check_access_control(self, policy):
+        violations = []
+        return violations

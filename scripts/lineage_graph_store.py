@@ -1,72 +1,67 @@
-import duckdb
-from typing import Dict, List, Optional, Tuple
-import json
-
 class LineageGraphStore:
-    def __init__(self, db_path: str = 'lineage.duckdb'):
-        self.db_path = db_path
-        self.conn = duckdb.connect(db_path)
-        self._init_schema()
+    def __init__(self):
+        self.nodes = {}
+        self.edges = []
+        self.node_index = {}
 
-    def _init_schema(self):
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS nodes (
-                node_id VARCHAR PRIMARY KEY,
-                node_type VARCHAR,
-                tags VARCHAR[],
-                metadata JSON,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS edges (
-                source_id VARCHAR,
-                target_id VARCHAR,
-                edge_type VARCHAR,
-                metadata JSON,
-                PRIMARY KEY (source_id, target_id)
-            )
-        """)
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_tags ON nodes USING GIN(tags)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_source ON edges(source_id)")
-
-    def add_node(self, node_id: str, node_type: str, tags: List[str], metadata: Dict):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO nodes VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            [node_id, node_type, tags, json.dumps(metadata)]
-        )
-
-    def add_edge(self, source: str, target: str, edge_type: str, metadata: Dict = None):
-        self.conn.execute(
-            "INSERT OR REPLACE INTO edges VALUES (?, ?, ?, ?)",
-            [source, target, edge_type, json.dumps(metadata or {})]
-        )
-
-    def find_nodes_by_tags(self, tags: List[str]) -> List[Dict]:
-        query = "SELECT * FROM nodes WHERE list_has_any(tags, ?)"
-        result = self.conn.execute(query, [tags]).fetchall()
-        return [self._row_to_dict(r) for r in result]
-
-    def get_downstream(self, node_id: str, max_depth: int = 3) -> List[str]:
-        query = f"""
-            WITH RECURSIVE downstream AS (
-                SELECT target_id, 1 as depth FROM edges WHERE source_id = ?
-                UNION ALL
-                SELECT e.target_id, d.depth + 1
-                FROM edges e JOIN downstream d ON e.source_id = d.target_id
-                WHERE d.depth < {max_depth}
-            )
-            SELECT DISTINCT target_id FROM downstream
-        """
-        return [r[0] for r in self.conn.execute(query, [node_id]).fetchall()]
-
-    def _row_to_dict(self, row: Tuple) -> Dict:
-        return {
-            'node_id': row[0],
-            'node_type': row[1],
-            'tags': row[2],
-            'metadata': json.loads(row[3]) if row[3] else {}
+    def add_node(self, node_id, node_type, metadata=None):
+        node = {
+            'id': node_id,
+            'type': node_type,
+            'metadata': metadata or {}
         }
+        self.nodes[node_id] = node
+        if node_type not in self.node_index:
+            self.node_index[node_type] = set()
+        self.node_index[node_type].add(node_id)
+        return node
 
-    def close(self):
-        self.conn.close()
+    def add_edge(self, source_id, target_id, edge_type='depends_on'):
+        edge = {
+            'source': source_id,
+            'target': target_id,
+            'type': edge_type
+        }
+        self.edges.append(edge)
+        return edge
+
+    def get_node(self, node_id):
+        return self.nodes.get(node_id)
+
+    def get_nodes_by_type(self, node_type):
+        node_ids = self.node_index.get(node_type, set())
+        return [self.nodes[nid] for nid in node_ids]
+
+    def query_nodes(self, filters):
+        results = []
+        for node in self.nodes.values():
+            match = True
+            for key, value in filters.items():
+                if key == 'type':
+                    if node['type'] != value:
+                        match = False
+                        break
+                elif key in node['metadata']:
+                    if node['metadata'][key] != value:
+                        match = False
+                        break
+                else:
+                    match = False
+                    break
+            if match:
+                results.append(node)
+        return results
+
+    def get_downstream_nodes(self, node_id):
+        downstream = []
+        for edge in self.edges:
+            if edge['source'] == node_id:
+                target = self.nodes.get(edge['target'])
+                if target:
+                    downstream.append(target)
+        return downstream
+
+    def clear(self):
+        self.nodes = {}
+        self.edges = []
+        self.node_index = {}

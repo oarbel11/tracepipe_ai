@@ -1,69 +1,71 @@
-from typing import Dict, List, Optional, Callable
 from scripts.lineage_graph_store import LineageGraphStore
-from scripts.peer_review.policy_engine import PolicyEngine, PolicyViolation
-from scripts.peer_review.governance_policy import GovernancePolicy
-import json
-import time
+from scripts.peer_review.policy_engine import PolicyEngine
 
 class GovernanceOrchestrator:
-    def __init__(self, db_path: str = 'lineage.duckdb'):
-        self.graph_store = LineageGraphStore(db_path)
-        self.policy_engine = PolicyEngine()
-        self.remediation_handlers: Dict[str, Callable] = {
-            'mask': self._mask_handler,
-            'alert': self._alert_handler,
-            'quarantine': self._quarantine_handler
-        }
-        self.violation_log: List[Dict] = []
+    def __init__(self, graph_store=None):
+        self.graph_store = graph_store or LineageGraphStore()
+        self.policy_engine = PolicyEngine(self.graph_store)
+        self.remediation_log = []
+        self.alert_log = []
 
-    def add_policy(self, policy: GovernancePolicy):
+    def add_policy(self, policy):
         self.policy_engine.add_policy(policy)
 
-    def register_asset(self, asset_id: str, tags: List[str], metadata: Dict, node_type: str = 'table'):
-        self.graph_store.add_node(asset_id, node_type, tags, metadata)
-
-    def register_lineage(self, source_id: str, target_id: str, edge_type: str = 'produces'):
-        self.graph_store.add_edge(source_id, target_id, edge_type)
-
-    def evaluate_policies(self, asset_id: Optional[str] = None) -> List[PolicyViolation]:
-        all_violations = []
-        if asset_id:
-            nodes = [n for n in self.graph_store.find_nodes_by_tags([]) if n['node_id'] == asset_id]
-        else:
-            nodes = self.graph_store.find_nodes_by_tags([])
+    def scan_and_remediate(self):
+        violations = self.policy_engine.evaluate_policies()
+        results = []
         
-        for node in nodes:
-            violations = self.policy_engine.evaluate_asset(
-                node['node_id'], node['tags'], node['metadata']
-            )
-            all_violations.extend(violations)
+        for violation in violations:
+            remediation_type = violation.get('remediation', 'alert')
+            
+            if remediation_type == 'mask':
+                result = self._apply_masking(violation)
+            elif remediation_type == 'alert':
+                result = self._send_alert(violation)
+            elif remediation_type == 'quarantine':
+                result = self._quarantine_data(violation)
+            else:
+                result = self._send_alert(violation)
+            
+            results.append(result)
         
-        return all_violations
+        return results
 
-    def execute_remediation(self, violation: PolicyViolation, action: str) -> Dict:
-        if action not in self.remediation_handlers:
-            return {'status': 'error', 'message': f'Unknown action: {action}'}
-        
-        result = self.remediation_handlers[action](violation)
-        self.violation_log.append({
-            'timestamp': time.time(),
-            'violation': violation.to_dict(),
-            'action': action,
-            'result': result
-        })
-        return result
+    def _apply_masking(self, violation):
+        node_id = violation['node_id']
+        action = {
+            'action': 'mask',
+            'node_id': node_id,
+            'status': 'success',
+            'message': f"Applied masking to {node_id}"
+        }
+        self.remediation_log.append(action)
+        return action
 
-    def _mask_handler(self, violation: PolicyViolation) -> Dict:
-        return {'status': 'success', 'action': 'mask', 'asset': violation.asset_id, 'message': 'Data masked'}
+    def _send_alert(self, violation):
+        alert = {
+            'action': 'alert',
+            'node_id': violation['node_id'],
+            'severity': violation['severity'],
+            'message': violation['message'],
+            'status': 'sent'
+        }
+        self.alert_log.append(alert)
+        return alert
 
-    def _alert_handler(self, violation: PolicyViolation) -> Dict:
-        return {'status': 'success', 'action': 'alert', 'severity': violation.severity, 'message': 'Alert sent'}
+    def _quarantine_data(self, violation):
+        node_id = violation['node_id']
+        action = {
+            'action': 'quarantine',
+            'node_id': node_id,
+            'status': 'success',
+            'message': f"Quarantined {node_id}"
+        }
+        self.remediation_log.append(action)
+        return action
 
-    def _quarantine_handler(self, violation: PolicyViolation) -> Dict:
-        return {'status': 'success', 'action': 'quarantine', 'asset': violation.asset_id, 'message': 'Asset quarantined'}
+    def get_remediation_log(self):
+        return self.remediation_log
 
-    def get_violation_log(self) -> List[Dict]:
-        return self.violation_log
-
-    def close(self):
-        self.graph_store.close()
+    def get_alert_log(self):
+        return self.alert_log
