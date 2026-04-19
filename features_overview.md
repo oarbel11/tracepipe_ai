@@ -113,3 +113,45 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #41 — Automated Data Governance Policies & Anomaly Detection
+
+**What it is & why it matters:**
+Imagine you have a robot guard watching over your toy collection. You tell the guard the rules: 'My race car should always have 4 wheels' and 'My teddy bear should be brown.' This feature is like that guard for data - it watches tables and data in Databricks and alerts you when something breaks the rules you set, like when a column disappears or weird numbers show up. This matters because bad data can break important programs and reports, and catching problems early saves a lot of time and headaches.
+
+**Tested on real data (companies_data catalog):**
+```
+Query ran OK but returned 0 rows.
+SQL: SELECT table_name, column_name, data_type FROM companies_data.information_schema.columns WHERE table_schema = 'main' LIMIT 5
+```
+
+**How to use it:**
+
+Step 1: Define governance policies in YAML or Python with schema and quality rules.
+Step 2: Run the governance engine to monitor assets: `python -m scripts.governance_engine --catalog companies_data --scan`.
+Step 3: Review detected anomalies and violations in the output JSON.
+Step 4: Set up continuous monitoring by scheduling the engine to run periodically.
+
+Example Python usage:
+python
+from scripts.governance_engine import GovernanceEngine
+from scripts.peer_review.governance_policy import GovernancePolicy
+
+engine = GovernanceEngine()
+policy = GovernancePolicy(
+    policy_id='schema_policy_1',
+    name='Customer Table Schema',
+    description='Enforce customer table schema',
+    rules={'required_columns': 'id,name,email', 'max_null_rate': '0.05'},
+    severity='high'
+)
+engine.add_policy(policy)
+violations = engine.check_asset('companies_data.main.customers')
+print(violations)
+
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/51)
