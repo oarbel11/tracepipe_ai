@@ -1,74 +1,47 @@
-from typing import Dict, List
+"""Generates actionable feedback from policy violations."""
+from typing import List, Dict, Any
+
 
 class FeedbackGenerator:
-    def __init__(self):
-        self.suggestion_templates = {
-            'pii_detection': self._pii_suggestions,
-            'schema_breaking': self._schema_suggestions,
-            'performance_threshold': self._performance_suggestions,
-            'data_contract': self._contract_suggestions
-        }
-    
-    def generate(self, violations: List[Dict], pr_data: Dict) -> Dict:
+    """Generates actionable AI feedback for PR reviews."""
+
+    def generate(self, violations: List[Dict[str, Any]]) -> str:
+        """Generate feedback message from violations."""
         if not violations:
-            return {
-                'summary': '✅ All governance policies passed',
-                'details': 'No violations detected',
-                'suggestions': []
-            }
-        
+            return "✅ All policy checks passed. No violations detected."
+
+        feedback_lines = ["## 🤖 AI Policy Review\n"]
         critical = [v for v in violations if v['severity'] == 'critical']
         high = [v for v in violations if v['severity'] == 'high']
-        
-        suggestions = []
-        for violation in violations:
-            rule_type = violation.get('rule_type')
-            handler = self.suggestion_templates.get(rule_type)
-            if handler:
-                suggestions.extend(handler(violation, pr_data))
-        
-        summary = f"❌ {len(violations)} policy violation(s) found"
+        medium = [v for v in violations if v['severity'] == 'medium']
+
         if critical:
-            summary += f" ({len(critical)} critical - merge blocked)"
-        
-        return {
-            'summary': summary,
-            'details': self._format_violations(violations),
-            'suggestions': suggestions,
-            'can_merge': len(critical) == 0
+            feedback_lines.append("### ❌ Critical Issues (Blocking)")
+            for v in critical:
+                feedback_lines.append(f"- **{v['type']}**: {v['message']}")
+                feedback_lines.append(f"  *Action*: {self._get_action(v['type'])}")
+            feedback_lines.append("")
+
+        if high:
+            feedback_lines.append("### ⚠️ High Priority Issues")
+            for v in high:
+                feedback_lines.append(f"- **{v['type']}**: {v['message']}")
+                feedback_lines.append(f"  *Action*: {self._get_action(v['type'])}")
+            feedback_lines.append("")
+
+        if medium:
+            feedback_lines.append("### ℹ️ Medium Priority Issues")
+            for v in medium:
+                feedback_lines.append(f"- **{v['type']}**: {v['message']}")
+                feedback_lines.append(f"  *Action*: {self._get_action(v['type'])}")
+
+        return "\n".join(feedback_lines)
+
+    def _get_action(self, violation_type: str) -> str:
+        """Get actionable recommendation for violation type."""
+        actions = {
+            "pii_exposure": "Remove PII or add proper masking/encryption",
+            "schema_breaking": "Use ALTER instead of DROP or add migration",
+            "performance_issue": "Specify explicit columns instead of SELECT *"
         }
-    
-    def _format_violations(self, violations: List[Dict]) -> str:
-        lines = []
-        for v in violations:
-            emoji = '🔴' if v['severity'] == 'critical' else '🟡'
-            lines.append(f"{emoji} [{v['severity'].upper()}] {v['name']}: {v['message']}")
-        return '\n'.join(lines)
-    
-    def _pii_suggestions(self, violation: Dict, pr_data: Dict) -> List[str]:
-        return [
-            "Ensure PII fields are properly masked or encrypted",
-            "Consider using a data masking function for sensitive columns",
-            "Review data classification tags on affected tables"
-        ]
-    
-    def _schema_suggestions(self, violation: Dict, pr_data: Dict) -> List[str]:
-        return [
-            "Use schema evolution with backward compatibility",
-            "Add a migration script for existing data",
-            "Consider deprecating the column instead of dropping"
-        ]
-    
-    def _performance_suggestions(self, violation: Dict, pr_data: Dict) -> List[str]:
-        return [
-            "Add partition pruning to reduce scan size",
-            "Consider caching intermediate results",
-            "Use broadcast join for small dimension tables"
-        ]
-    
-    def _contract_suggestions(self, violation: Dict, pr_data: Dict) -> List[str]:
-        return [
-            "Update the data contract definition",
-            "Notify downstream consumers of the change",
-            "Version the API endpoint to maintain compatibility"
-        ]
+        return actions.get(violation_type, "Review and address this issue")
