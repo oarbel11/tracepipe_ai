@@ -1,81 +1,96 @@
+"""Tests for lineage UI and governance features."""
 import pytest
-from unittest.mock import Mock
 from scripts.lineage_ui_manager import LineageUIManager
+from scripts.impact_analyzer import ImpactAnalyzer
+from scripts.governance_manager import GovernanceManager
 
-@pytest.fixture
-def manager():
-    return LineageUIManager()
 
-@pytest.fixture
-def populated_manager():
-    mgr = LineageUIManager()
-    mgr.add_lineage_node("table1", "table", {"name": "sales"})
-    mgr.add_lineage_node("table2", "table", {"name": "orders"})
-    mgr.add_lineage_node("table3", "table", {"name": "customers"})
-    mgr.add_lineage_edge("table1", "table2", "join")
-    mgr.add_lineage_edge("table2", "table3", "aggregate")
-    return mgr
+class TestLineageUI:
+    def test_lineage_manager_basic(self):
+        manager = LineageUIManager()
+        manager.add_lineage("table_a", "table_b")
+        manager.add_lineage("table_b", "table_c")
 
-def test_add_lineage_node(manager):
-    manager.add_lineage_node("test_table", "table", {"name": "test"})
-    assert "test_table" in manager.lineage_graph.nodes()
-    assert manager.lineage_graph.nodes["test_table"]["type"] == "table"
+        downstream = manager.get_downstream("table_a")
+        assert "table_b" in downstream
+        assert "table_c" in downstream
 
-def test_add_lineage_edge(manager):
-    manager.add_lineage_node("source", "table", {"name": "src"})
-    manager.add_lineage_node("target", "table", {"name": "tgt"})
-    manager.add_lineage_edge("source", "target", "transform")
-    assert manager.lineage_graph.has_edge("source", "target")
+    def test_lineage_upstream(self):
+        manager = LineageUIManager()
+        manager.add_lineage("table_a", "table_b")
+        manager.add_lineage("table_b", "table_c")
 
-def test_get_lineage_graph(populated_manager):
-    result = populated_manager.get_lineage_graph("table1")
-    assert len(result["nodes"]) > 0
-    assert len(result["edges"]) > 0
+        upstream = manager.get_upstream("table_c")
+        assert "table_b" in upstream
+        assert "table_a" in upstream
 
-def test_get_lineage_graph_missing_node(manager):
-    result = manager.get_lineage_graph("nonexistent")
-    assert result["nodes"] == []
-    assert result["edges"] == []
+    def test_lineage_subgraph(self):
+        manager = LineageUIManager()
+        manager.add_lineage("table_a", "table_b")
+        manager.add_lineage("table_b", "table_c")
 
-def test_impact_analysis(populated_manager):
-    result = populated_manager.impact_analysis("table1", "schema_change")
-    assert "impacted_nodes" in result
-    assert "risk_level" in result
-    assert result["change_type"] == "schema_change"
+        subgraph = manager.get_lineage_subgraph("table_b", depth=1)
+        assert "table_a" in subgraph["nodes"]
+        assert "table_b" in subgraph["nodes"]
+        assert "table_c" in subgraph["nodes"]
 
-def test_impact_analysis_missing_node(manager):
-    result = manager.impact_analysis("nonexistent", "test")
-    assert result["risk_level"] == "none"
+    def test_lineage_validation(self):
+        manager = LineageUIManager()
+        manager.add_lineage("table_a", "table_b")
+        manager.lineage_graph["isolated"] = {"upstream": [], "downstream": []}
 
-def test_add_classification(manager):
-    manager.add_lineage_node("table1", "table", {"name": "test"})
-    manager.add_classification("table1", "PII")
-    assert manager.classifications["table1"] == "PII"
+        issues = manager.validate_lineage()
+        assert len(issues) == 1
+        assert issues[0]["entity"] == "isolated"
 
-def test_add_glossary_term(manager):
-    manager.add_glossary_term("table1", "Customer", "A person who purchases")
-    assert manager.glossary_terms["table1"]["term"] == "Customer"
 
-def test_add_masking_policy(manager):
-    manager.add_masking_policy("table1", "mask_email")
-    assert manager.masking_policies["table1"] == "mask_email"
+class TestImpactAnalyzer:
+    def test_column_removal_impact(self):
+        manager = LineageUIManager()
+        manager.add_lineage("table_a", "table_b")
 
-def test_get_governance_info(manager):
-    manager.add_classification("table1", "PII")
-    manager.add_glossary_term("table1", "User", "App user")
-    manager.add_masking_policy("table1", "hash")
-    info = manager.get_governance_info("table1")
-    assert info["classification"] == "PII"
-    assert info["glossary_term"]["term"] == "User"
-    assert info["masking_policy"] == "hash"
+        analyzer = ImpactAnalyzer(manager)
+        analyzer.register_schema("table_a", {"id": "int", "name": "string"})
+        analyzer.register_schema("table_b", {"id": "int", "name": "string"})
 
-def test_detect_lineage_issues(manager):
-    manager.add_lineage_node("isolated", "table", {"name": "test"})
-    issues = manager.detect_lineage_issues()
-    assert len(issues) == 1
-    assert issues[0]["issue"] == "isolated_node"
+        impact = analyzer.analyze_column_removal("table_a", "name")
+        assert impact["column"] == "name"
+        assert len(impact["impacted_entities"]) > 0
 
-def test_export_lineage(populated_manager):
-    result = populated_manager.export_lineage()
-    assert "nodes" in result
-    assert "links" in result
+    def test_column_rename_impact(self):
+        manager = LineageUIManager()
+        manager.add_lineage("table_a", "table_b")
+
+        analyzer = ImpactAnalyzer(manager)
+        analyzer.register_schema("table_a", {"id": "int", "old_col": "string"})
+        analyzer.register_schema("table_b", {"id": "int", "old_col": "string"})
+
+        impact = analyzer.analyze_column_rename("table_a", "old_col", "new_col")
+        assert impact["old_column"] == "old_col"
+        assert impact["new_column"] == "new_col"
+
+
+class TestGovernanceManager:
+    def test_classification(self):
+        gov = GovernanceManager()
+        gov.add_classification("table_a", "ssn", "PII")
+        assert gov.get_classification("table_a", "ssn") == "PII"
+
+    def test_glossary(self):
+        gov = GovernanceManager()
+        gov.add_glossary_term("customer", "A person who buys products")
+        term = gov.get_glossary_term("customer")
+        assert term["definition"] == "A person who buys products"
+
+    def test_masking_policy(self):
+        gov = GovernanceManager()
+        gov.apply_masking_policy("table_a", "ssn", "hash")
+        assert gov.get_masking_policy("table_a", "ssn") == "hash"
+
+    def test_tags(self):
+        gov = GovernanceManager()
+        gov.add_tag("table_a", "finance")
+        gov.add_tag("table_a", "pii")
+        tags = gov.get_tags("table_a")
+        assert "finance" in tags
+        assert "pii" in tags
