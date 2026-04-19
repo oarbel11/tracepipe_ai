@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #39 — Enhance Real-time Performance and Actionable Governance Orchestration for Large Data Estates
+
+**What it is & why it matters:**
+Optimize the interactive UI for real-time performance and responsiveness when visualizing and filtering large-scale lineage graphs (millions of nodes/edges). Extend the governance policy overlay to include active policy enforcement mechanisms and automated remediation workflows triggered directly from the lineage view. This would allow users to not only visualize policy violations (e.g., PII in non-compliant tables) but also initiate automated actions like masking or alerting, transforming the feature from a powerful visualization tool into an active data governance orchestration platform, essential for enterprise-scale operations.
+
+**How to use it:**
+
+See `tests/test_governance_orchestration.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/49)
