@@ -1,43 +1,68 @@
-from typing import Dict, List, Optional
+import json
 import re
+from typing import List, Dict, Any, Optional
+
+
+class ColumnNode:
+    """Represents a column-level lineage node"""
+    def __init__(self, table: str, column: str, transformation: Optional[str] = None):
+        self.table = table
+        self.column = column
+        self.transformation = transformation
+        self.dependencies = []
+
+    def add_dependency(self, node: 'ColumnNode'):
+        self.dependencies.append(node)
+
+    def __repr__(self):
+        return f"{self.table}.{self.column}"
+
 
 class LineageExtractor:
+    """Extracts lineage from Databricks Unity Catalog and Spark queries"""
+
     def __init__(self):
-        self.lineage_map: Dict[str, List[str]] = {}
+        self.lineage_data = []
 
-    def extract_from_sql(self, sql: str, target_table: str) -> List[str]:
-        upstream = []
-        from_pattern = r'FROM\s+([\w.]+)'
-        join_pattern = r'JOIN\s+([\w.]+)'
-        from_matches = re.findall(from_pattern, sql, re.IGNORECASE)
-        join_matches = re.findall(join_pattern, sql, re.IGNORECASE)
-        upstream.extend(from_matches)
-        upstream.extend(join_matches)
-        self.lineage_map[target_table] = list(set(upstream))
-        return upstream
+    def extract_from_query(self, query: str) -> Dict[str, Any]:
+        """Extract lineage from SQL query"""
+        query = query.lower().strip()
+        lineage = {"sources": [], "target": None, "type": "query"}
 
-    def extract_from_spark_plan(self, plan: str) -> Dict[str, List[str]]:
-        lineage = {}
-        relation_pattern = r'Relation\[.*?\]\s+([\w.]+)'
-        relations = re.findall(relation_pattern, plan)
-        if relations:
-            lineage['sources'] = list(set(relations))
+        from_match = re.search(r'from\s+([\w.]+)', query)
+        if from_match:
+            lineage["sources"].append(from_match.group(1))
+
+        join_matches = re.findall(r'join\s+([\w.]+)', query)
+        lineage["sources"].extend(join_matches)
+
+        create_match = re.search(r'create\s+(?:table|view)\s+([\w.]+)', query)
+        insert_match = re.search(r'insert\s+into\s+([\w.]+)', query)
+
+        if create_match:
+            lineage["target"] = create_match.group(1)
+        elif insert_match:
+            lineage["target"] = insert_match.group(1)
+
+        self.lineage_data.append(lineage)
         return lineage
 
-    def get_lineage(self, table: str) -> List[str]:
-        return self.lineage_map.get(table, [])
+    def extract_column_lineage(self, query: str) -> List[ColumnNode]:
+        """Extract column-level lineage from query"""
+        nodes = []
+        select_match = re.search(r'select\s+(.+?)\s+from', query.lower())
+        if select_match:
+            columns = select_match.group(1).split(',')
+            for col in columns:
+                col = col.strip()
+                if ' as ' in col:
+                    expr, alias = col.split(' as ')
+                    node = ColumnNode("target", alias.strip(), expr.strip())
+                else:
+                    node = ColumnNode("target", col)
+                nodes.append(node)
+        return nodes
 
-    def get_all_lineage(self) -> Dict[str, List[str]]:
-        return self.lineage_map
-
-    def build_dependency_chain(self, table: str, visited: Optional[set] = None) -> List[str]:
-        if visited is None:
-            visited = set()
-        if table in visited:
-            return []
-        visited.add(table)
-        chain = [table]
-        upstream = self.lineage_map.get(table, [])
-        for upstream_table in upstream:
-            chain.extend(self.build_dependency_chain(upstream_table, visited))
-        return chain
+    def get_lineage_graph(self) -> Dict[str, Any]:
+        """Return complete lineage graph"""
+        return {"nodes": self.lineage_data, "type": "spark_lineage"}

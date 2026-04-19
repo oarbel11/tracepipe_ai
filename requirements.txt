@@ -1,8 +1,3 @@
-duckdb
-pandas
-mcp
-gitpython
+requests
+pytest
 networkx
-databricks-sql-connector
-sqlparse
-pyyaml

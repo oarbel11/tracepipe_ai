@@ -1,76 +1,59 @@
 import networkx as nx
-from typing import Dict, List, Optional, Set, Tuple
-from dataclasses import dataclass, field
-from datetime import datetime
+from typing import Dict, List, Any, Optional
 
-@dataclass
+
 class LineageNode:
-    node_id: str
-    node_type: str
-    platform: str
-    metadata: Dict = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    """Represents a node in the unified lineage graph"""
+    def __init__(self, node_id: str, node_type: str, platform: str, metadata: Optional[Dict] = None):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.platform = platform
+        self.metadata = metadata or {}
 
-    def to_dict(self) -> Dict:
-        return {
-            "node_id": self.node_id,
-            "node_type": self.node_type,
-            "platform": self.platform,
-            "metadata": self.metadata,
-            "tags": self.tags,
-            "timestamp": self.timestamp
-        }
+    def __repr__(self):
+        return f"LineageNode({self.node_id}, {self.platform})"
+
 
 class UnifiedLineageGraph:
+    """Unified cross-platform lineage graph"""
     def __init__(self):
         self.graph = nx.DiGraph()
-        self.nodes: Dict[str, LineageNode] = {}
 
     def add_node(self, node: LineageNode):
-        self.nodes[node.node_id] = node
-        self.graph.add_node(node.node_id, **node.to_dict())
+        """Add a node to the graph"""
+        self.graph.add_node(node.node_id, node_type=node.node_type, platform=node.platform, metadata=node.metadata)
 
-    def add_edge(self, source_id: str, target_id: str, edge_type: str = "derives_from"):
+    def add_edge(self, source_id: str, target_id: str, edge_type: str = "transforms"):
+        """Add an edge between nodes"""
         self.graph.add_edge(source_id, target_id, edge_type=edge_type)
 
-    def get_upstream(self, node_id: str, max_depth: Optional[int] = None) -> List[str]:
+    def get_upstream(self, node_id: str) -> List[str]:
+        """Get all upstream dependencies"""
         if node_id not in self.graph:
             return []
-        if max_depth:
-            return list(nx.ancestors(self.graph, node_id))[:max_depth]
-        return list(nx.ancestors(self.graph, node_id))
+        return list(self.graph.predecessors(node_id))
 
-    def get_downstream_impact(self, node_id: str) -> List[str]:
+    def get_downstream(self, node_id: str) -> List[str]:
+        """Get all downstream dependencies"""
         if node_id not in self.graph:
             return []
-        return list(nx.descendants(self.graph, node_id))
+        return list(self.graph.successors(node_id))
 
-    def get_path(self, source_id: str, target_id: str) -> List[List[str]]:
-        try:
-            return list(nx.all_simple_paths(self.graph, source_id, target_id))
-        except (nx.NodeNotFound, nx.NetworkXNoPath):
-            return []
+    def get_impact_analysis(self, node_id: str) -> Dict[str, List[str]]:
+        """Perform impact analysis for a node"""
+        return {"upstream": self.get_upstream(node_id), "downstream": self.get_downstream(node_id)}
 
-    def get_cross_platform_paths(self) -> List[Tuple[str, str, List[str]]]:
-        paths = []
-        for node_id in self.graph.nodes():
-            node = self.nodes.get(node_id)
-            if not node:
-                continue
-            for descendant in self.get_downstream_impact(node_id):
-                desc_node = self.nodes.get(descendant)
-                if desc_node and desc_node.platform != node.platform:
-                    path = nx.shortest_path(self.graph, node_id, descendant)
-                    paths.append((node.platform, desc_node.platform, path))
-        return paths
+    def merge_lineage(self, external_graph: Dict[str, Any]):
+        """Merge external lineage into unified graph"""
+        for node in external_graph.get("nodes", []):
+            node_obj = LineageNode(node["id"], node.get("type", "table"), node.get("platform", "external"), node.get("metadata"))
+            self.add_node(node_obj)
 
-    def to_dict(self) -> Dict:
-        return {
-            "nodes": [n.to_dict() for n in self.nodes.values()],
-            "edges": [{
-                "source": u,
-                "target": v,
-                "type": d.get("edge_type", "derives_from")
-            } for u, v, d in self.graph.edges(data=True)]
-        }
+        for edge in external_graph.get("edges", []):
+            self.add_edge(edge["source"], edge["target"], edge.get("type", "transforms"))
+
+    def export_graph(self) -> Dict[str, Any]:
+        """Export graph as dictionary"""
+        nodes = [{"id": n, **self.graph.nodes[n]} for n in self.graph.nodes()]
+        edges = [{"source": u, "target": v, **self.graph.edges[u, v]} for u, v in self.graph.edges()]
+        return {"nodes": nodes, "edges": edges}

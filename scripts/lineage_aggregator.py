@@ -1,76 +1,57 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Any
 from scripts.unified_lineage import UnifiedLineageGraph, LineageNode
-import json
+
+
+class LineageAggregator:
+    """Aggregates lineage from multiple sources into unified graph"""
+
+    def __init__(self):
+        self.unified_graph = UnifiedLineageGraph()
+        self.connectors = {}
+
+    def register_connector(self, platform: str, connector: 'ExternalLineageConnector'):
+        """Register external lineage connector"""
+        self.connectors[platform] = connector
+
+    def aggregate_lineage(self) -> UnifiedLineageGraph:
+        """Aggregate lineage from all registered connectors"""
+        for platform, connector in self.connectors.items():
+            external_lineage = connector.fetch_lineage()
+            self.unified_graph.merge_lineage(external_lineage)
+        return self.unified_graph
+
+    def add_unity_catalog_lineage(self, uc_lineage: Dict[str, Any]):
+        """Add Unity Catalog lineage to unified graph"""
+        for item in uc_lineage.get("nodes", []):
+            node = LineageNode(item.get("id"), item.get("type", "table"), "unity_catalog", item.get("metadata"))
+            self.unified_graph.add_node(node)
+
+        for edge in uc_lineage.get("edges", []):
+            self.unified_graph.add_edge(edge["source"], edge["target"])
+
+    def get_unified_graph(self) -> UnifiedLineageGraph:
+        """Return the unified lineage graph"""
+        return self.unified_graph
+
 
 class ExternalLineageConnector:
+    """Base class for external lineage connectors"""
+
     def __init__(self, platform_name: str):
         self.platform_name = platform_name
 
-    def extract_lineage(self, resource_id: str) -> Dict:
-        raise NotImplementedError("Subclasses must implement extract_lineage")
+    def fetch_lineage(self) -> Dict[str, Any]:
+        """Fetch lineage from external platform (override in subclass)"""
+        return {"nodes": [], "edges": []}
 
-class LineageAggregator:
-    def __init__(self):
-        self.unified_graph = UnifiedLineageGraph()
-        self.connectors: Dict[str, ExternalLineageConnector] = {}
 
-    def register_connector(self, connector: ExternalLineageConnector):
-        self.connectors[connector.platform_name] = connector
+class BIToolConnector(ExternalLineageConnector):
+    """Connector for BI tools like Tableau, PowerBI"""
 
-    def add_databricks_lineage(self, table_name: str, upstream: Optional[List[str]] = None):
-        node = LineageNode(
-            node_id=table_name,
-            node_type="table",
-            platform="databricks",
-            metadata={"catalog_name": table_name.split(".")[0] if "." in table_name else ""}
-        )
-        self.unified_graph.add_node(node)
-        if upstream:
-            for upstream_id in upstream:
-                upstream_node = LineageNode(
-                    node_id=upstream_id,
-                    node_type="table",
-                    platform="databricks"
-                )
-                self.unified_graph.add_node(upstream_node)
-                self.unified_graph.add_edge(upstream_id, table_name)
+    def __init__(self, platform_name: str, api_endpoint: str):
+        super().__init__(platform_name)
+        self.api_endpoint = api_endpoint
 
-    def add_external_lineage(self, platform: str, resource_id: str,
-                            upstream: Optional[List[str]] = None,
-                            downstream: Optional[List[str]] = None,
-                            resource_type: str = "report"):
-        node = LineageNode(
-            node_id=f"{platform}://{resource_id}",
-            node_type=resource_type,
-            platform=platform,
-            metadata={"resource_id": resource_id}
-        )
-        self.unified_graph.add_node(node)
-        if upstream:
-            for upstream_id in upstream:
-                if upstream_id not in self.unified_graph.nodes:
-                    self.unified_graph.add_node(LineageNode(
-                        node_id=upstream_id,
-                        node_type="table",
-                        platform="databricks"
-                    ))
-                self.unified_graph.add_edge(upstream_id, node.node_id)
-        if downstream:
-            for downstream_id in downstream:
-                self.unified_graph.add_edge(node.node_id, downstream_id)
-
-    def get_unified_graph(self) -> UnifiedLineageGraph:
-        return self.unified_graph
-
-    def export_graph(self, output_path: str):
-        with open(output_path, "w") as f:
-            json.dump(self.unified_graph.to_dict(), f, indent=2)
-
-    def get_cross_platform_impact(self, node_id: str) -> Dict:
-        downstream = self.unified_graph.get_downstream_impact(node_id)
-        platforms = {}
-        for desc_id in downstream:
-            node = self.unified_graph.nodes.get(desc_id)
-            if node:
-                platforms.setdefault(node.platform, []).append(desc_id)
-        return platforms
+    def fetch_lineage(self) -> Dict[str, Any]:
+        """Fetch lineage from BI tool"""
+        return {"nodes": [{"id": f"{self.platform_name}_dashboard", "type": "dashboard", "platform": self.platform_name}], "edges": []}
