@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-19
+
+### 🔗 Feature #35 — End-to-End Cross-System Lineage Stitching
+
+**What it is & why it matters:**
+Databricks Unity Catalog provides strong internal lineage, but users struggle to gain a holistic view across their entire data stack, including external sources (e.g., Salesforce, operational databases), ETL/transformation tools (e.g., dbt), and downstream BI platforms (e.g., Tableau, PowerBI). This feature will automatically ingest and stitch together lineage metadata from diverse external systems with Unity Catalog's native lineage, presenting a unified, interactive end-to-end data flow visualization.
+
+**How to use it:**
+
+See `tests/test_lineage_stitching.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/45)
