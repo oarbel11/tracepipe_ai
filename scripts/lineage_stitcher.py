@@ -1,62 +1,70 @@
-from typing import List, Dict, Set, Optional
-from scripts.external_connectors import LineageNode, LineageEdge
+"""Core lineage stitching engine."""
 import re
+from typing import Dict, List, Set, Tuple
+
 
 class LineageStitcher:
+    """Stitches lineage from multiple sources."""
+
     def __init__(self):
-        self.match_rules = []
-        self._setup_default_rules()
+        self.stitching_rules = []
 
-    def _setup_default_rules(self):
-        self.match_rules = [
-            (r'databricks\.(?P<catalog>\w+)\.(?P<schema>\w+)\.(?P<table>\w+)', 'unity_catalog'),
-            (r'dbt\.(?P<database>\w+)\.(?P<schema>\w+)\.(?P<name>\w+)', 'dbt'),
-            (r'tableau\.(?P<connection>[\w\.]+)', 'tableau'),
-            (r'salesforce\.(?P<object>\w+)', 'salesforce')
-        ]
+    def add_rule(self, pattern: str, source: str, target: str):
+        """Add a stitching rule."""
+        self.stitching_rules.append({
+            'pattern': pattern,
+            'source': source,
+            'target': target
+        })
 
-    def extract_identifiers(self, node: LineageNode) -> Set[str]:
-        identifiers = {node.identifier}
-        if node.metadata:
-            if 'database' in node.metadata and 'schema' in node.metadata and 'name' in node.metadata:
-                identifiers.add(f"{node.metadata['database']}.{node.metadata['schema']}.{node.metadata['name']}")
-            if 'connection' in node.metadata:
-                identifiers.add(node.metadata['connection'])
-        return identifiers
+    def match_entities(self, entity1: Dict, entity2: Dict) -> float:
+        """Calculate match score between two entities."""
+        score = 0.0
+        name1 = entity1.get('name', '').lower()
+        name2 = entity2.get('name', '').lower()
 
-    def find_matches(self, node1: LineageNode, node2: LineageNode) -> bool:
-        ids1 = self.extract_identifiers(node1)
-        ids2 = self.extract_identifiers(node2)
-        
-        for id1 in ids1:
-            for id2 in ids2:
-                if self._identifiers_match(id1, id2):
-                    return True
-        return False
+        if name1 == name2:
+            score += 1.0
+        elif name1 in name2 or name2 in name1:
+            score += 0.5
 
-    def _identifiers_match(self, id1: str, id2: str) -> bool:
-        parts1 = id1.lower().split('.')
-        parts2 = id2.lower().split('.')
-        common = set(parts1) & set(parts2)
-        return len(common) >= 2
+        if entity1.get('type') == entity2.get('type'):
+            score += 0.3
 
-    def stitch_lineage(self, all_nodes: List[LineageNode], all_edges: List[LineageEdge]) -> List[LineageEdge]:
-        stitched_edges = list(all_edges)
-        node_map = {}
-        
-        for i, node1 in enumerate(all_nodes):
-            for node2 in all_nodes[i+1:]:
-                if node1.system != node2.system and self.find_matches(node1, node2):
-                    stitched_edges.append(LineageEdge(
-                        source=node1,
-                        target=node2,
-                        edge_type="cross_system_link"
+        return score
+
+    def stitch(self, lineage1: Dict, lineage2: Dict, threshold=0.5) -> List[Tuple]:
+        """Stitch two lineage graphs together."""
+        mappings = []
+        entities1 = lineage1.get('entities', [])
+        entities2 = lineage2.get('entities', [])
+
+        for e1 in entities1:
+            for e2 in entities2:
+                score = self.match_entities(e1, e2)
+                if score >= threshold:
+                    mappings.append((
+                        e1.get('id'),
+                        e2.get('id'),
+                        score
                     ))
-        
-        return stitched_edges
 
-    def create_unified_identifier(self, node: LineageNode) -> str:
-        if node.metadata:
-            parts = [node.metadata.get('database', ''), node.metadata.get('schema', ''), node.metadata.get('name', '')]
-            return '.'.join(filter(None, parts)) or node.identifier
-        return node.identifier
+        return mappings
+
+    def merge_lineage(self, lineages: List[Dict]) -> Dict:
+        """Merge multiple lineage graphs."""
+        merged = {'entities': [], 'edges': []}
+        entity_map = {}
+
+        for lineage in lineages:
+            for entity in lineage.get('entities', []):
+                eid = entity.get('id')
+                if eid not in entity_map:
+                    entity_map[eid] = entity
+                    merged['entities'].append(entity)
+
+            for edge in lineage.get('edges', []):
+                if edge not in merged['edges']:
+                    merged['edges'].append(edge)
+
+        return merged
