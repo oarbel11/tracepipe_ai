@@ -1,81 +1,67 @@
 import ast
-import inspect
-from typing import Dict, List, Any, Optional, Set
-import re
+import json
+from typing import Dict, List, Any
 
-class SparkASTAnalyzer(ast.NodeVisitor):
+class SparkInstrumentation:
     def __init__(self):
-        self.lineage_ops = []
-        self.udf_calls = []
-        self.dynamic_sql = []
-        self.dataframe_ops = []
+        self.lineage_data = []
 
-    def visit_Call(self, node):
+    def extract_lineage_from_code(self, code: str) -> List[Dict[str, Any]]:
+        """Extract column lineage from Spark code via AST analysis."""
+        lineage = []
+        try:
+            tree = ast.parse(code)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    lineage.extend(self._analyze_call(node))
+        except SyntaxError:
+            pass
+        return lineage
+
+    def _analyze_call(self, node: ast.Call) -> List[Dict[str, Any]]:
+        """Analyze function calls for lineage patterns."""
+        lineage = []
+        func_name = self._get_func_name(node)
+        if func_name in ['select', 'withColumn', 'filter', 'groupBy']:
+            lineage.append({
+                'operation': func_name,
+                'columns': self._extract_columns(node),
+                'type': 'transformation'
+            })
+        return lineage
+
+    def _get_func_name(self, node: ast.Call) -> str:
+        """Get function name from call node."""
         if isinstance(node.func, ast.Attribute):
-            method = node.func.attr
-            if method in ['select', 'withColumn', 'join', 'filter', 'groupBy']:
-                self.dataframe_ops.append({'op': method, 'args': self._extract_args(node)})
-            elif method == 'sql':
-                self.dynamic_sql.append(self._extract_sql_string(node))
-        elif isinstance(node.func, ast.Name) and 'udf' in node.func.id:
-            self.udf_calls.append(node.func.id)
-        self.generic_visit(node)
+            return node.func.attr
+        elif isinstance(node.func, ast.Name):
+            return node.func.id
+        return ''
 
-    def _extract_args(self, node):
-        args = []
+    def _extract_columns(self, node: ast.Call) -> List[str]:
+        """Extract column names from call arguments."""
+        columns = []
         for arg in node.args:
             if isinstance(arg, ast.Constant):
-                args.append(arg.value)
+                columns.append(str(arg.value))
             elif isinstance(arg, ast.Name):
-                args.append(arg.id)
-        return args
+                columns.append(arg.id)
+        return columns
 
-    def _extract_sql_string(self, node):
-        if node.args and isinstance(node.args[0], ast.Constant):
-            return node.args[0].value
-        return None
+    def capture_runtime_lineage(self, execution_context: Dict) -> Dict[str, Any]:
+        """Capture lineage from runtime execution context."""
+        return {
+            'notebook_path': execution_context.get('notebook_path', ''),
+            'timestamp': execution_context.get('timestamp', ''),
+            'transformations': execution_context.get('transformations', []),
+            'source_tables': execution_context.get('source_tables', []),
+            'target_tables': execution_context.get('target_tables', [])
+        }
 
-class InstrumentedLineageExtractor:
-    def __init__(self):
-        self.runtime_lineage = []
-        self.captured_operations = []
-
-    def extract_from_notebook(self, notebook_code: str) -> Dict[str, Any]:
-        try:
-            tree = ast.parse(notebook_code)
-            analyzer = SparkASTAnalyzer()
-            analyzer.visit(tree)
-            lineage = self._build_lineage_graph(analyzer)
-            return lineage
-        except SyntaxError:
-            return {'error': 'Failed to parse notebook', 'operations': []}
-
-    def _build_lineage_graph(self, analyzer: SparkASTAnalyzer) -> Dict[str, Any]:
-        nodes = set()
-        edges = []
-        for op in analyzer.dataframe_ops:
-            for arg in op['args']:
-                if isinstance(arg, str):
-                    nodes.add(arg)
-                    edges.append({'source': arg, 'target': op['op'], 'type': 'transform'})
-        for sql in analyzer.dynamic_sql:
-            if sql:
-                tables = self._extract_tables_from_sql(sql)
-                nodes.update(tables)
-                for table in tables:
-                    edges.append({'source': table, 'target': 'dynamic_sql', 'type': 'query'})
-        return {'nodes': list(nodes), 'edges': edges, 'udf_calls': analyzer.udf_calls}
-
-    def _extract_tables_from_sql(self, sql: str) -> Set[str]:
-        pattern = r'FROM\s+([\w.]+)|JOIN\s+([\w.]+)'
-        matches = re.findall(pattern, sql, re.IGNORECASE)
-        tables = set()
-        for match in matches:
-            tables.update([t for t in match if t])
-        return tables
-
-    def instrument_udf(self, udf_func):
-        def wrapper(*args, **kwargs):
-            self.captured_operations.append({'udf': udf_func.__name__, 'args': args})
-            return udf_func(*args, **kwargs)
-        return wrapper
+    def instrument_udf(self, udf_code: str) -> Dict[str, Any]:
+        """Instrument UDF for lineage tracking."""
+        lineage = self.extract_lineage_from_code(udf_code)
+        return {
+            'udf_lineage': lineage,
+            'instrumented': True
+        }

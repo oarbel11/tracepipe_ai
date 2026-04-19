@@ -1,53 +1,66 @@
-from typing import Dict, List, Optional, Set
-import yaml
-from databricks import sql
-import networkx as nx
+import json
+from typing import Dict, List, Any
+from pathlib import Path
 
 class CrossWorkspaceLineage:
-    def __init__(self, config_path: str = 'config/config.yml'):
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
-        self.workspaces = self.config.get('databricks_workspaces', {})
+    def __init__(self, config: Dict[str, Any]):
+        self.workspaces = config.get('workspaces', [])
         self.lineage_cache = {}
 
-    def _get_connection(self, workspace_name: str):
-        ws_config = self.workspaces.get(workspace_name, {})
-        return sql.connect(
-            server_hostname=ws_config.get('hostname'),
-            http_path=ws_config.get('http_path'),
-            access_token=ws_config.get('token')
-        )
+    def aggregate_lineage(self) -> Dict[str, Any]:
+        """Aggregate lineage from multiple workspaces."""
+        aggregated = {
+            'workspaces': {},
+            'cross_workspace_flows': []
+        }
+        for workspace in self.workspaces:
+            workspace_id = workspace.get('id', '')
+            aggregated['workspaces'][workspace_id] = self._fetch_workspace_lineage(workspace)
+        aggregated['cross_workspace_flows'] = self._identify_cross_flows(aggregated['workspaces'])
+        return aggregated
 
-    def fetch_workspace_lineage(self, workspace_name: str) -> Dict[str, Any]:
-        if workspace_name in self.lineage_cache:
-            return self.lineage_cache[workspace_name]
-        conn = self._get_connection(workspace_name)
-        lineage = {'tables': [], 'notebooks': [], 'columns': []}
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT table_catalog, table_schema, table_name FROM system.information_schema.tables")
-            lineage['tables'] = [{'catalog': r[0], 'schema': r[1], 'name': r[2]} for r in cursor.fetchall()]
-            cursor.close()
-        except Exception as e:
-            lineage['error'] = str(e)
-        finally:
-            conn.close()
-        self.lineage_cache[workspace_name] = lineage
+    def _fetch_workspace_lineage(self, workspace: Dict) -> Dict[str, Any]:
+        """Fetch lineage data from a single workspace."""
+        workspace_id = workspace.get('id', '')
+        if workspace_id in self.lineage_cache:
+            return self.lineage_cache[workspace_id]
+        lineage = {
+            'workspace_id': workspace_id,
+            'notebooks': workspace.get('notebooks', []),
+            'tables': workspace.get('tables', [])
+        }
+        self.lineage_cache[workspace_id] = lineage
         return lineage
 
-    def get_table_lineage(self, table_fqn: str, include_workspaces: List[str]) -> Dict[str, Any]:
-        graph = nx.DiGraph()
-        for ws in include_workspaces:
-            ws_lineage = self.fetch_workspace_lineage(ws)
-            for table in ws_lineage.get('tables', []):
-                fqn = f"{table['catalog']}.{table['schema']}.{table['name']}"
-                graph.add_node(fqn, workspace=ws, type='table')
-        upstream = list(graph.predecessors(table_fqn)) if table_fqn in graph else []
-        downstream = list(graph.successors(table_fqn)) if table_fqn in graph else []
-        return {'table': table_fqn, 'upstream': upstream, 'downstream': downstream, 'graph': nx.node_link_data(graph)}
+    def _identify_cross_flows(self, workspaces_data: Dict) -> List[Dict[str, Any]]:
+        """Identify data flows across workspaces."""
+        flows = []
+        for ws1_id, ws1_data in workspaces_data.items():
+            for ws2_id, ws2_data in workspaces_data.items():
+                if ws1_id != ws2_id:
+                    flow = self._find_flow(ws1_data, ws2_data, ws1_id, ws2_id)
+                    if flow:
+                        flows.append(flow)
+        return flows
 
-    def aggregate_lineage(self, include_workspaces: List[str]) -> Dict[str, Any]:
-        all_lineage = {}
-        for ws in include_workspaces:
-            all_lineage[ws] = self.fetch_workspace_lineage(ws)
-        return all_lineage
+    def _find_flow(self, src_ws: Dict, tgt_ws: Dict, src_id: str, tgt_id: str) -> Dict:
+        """Find flow between two workspaces."""
+        src_tables = set(src_ws.get('tables', []))
+        tgt_tables = set(tgt_ws.get('tables', []))
+        common = src_tables.intersection(tgt_tables)
+        if common:
+            return {
+                'source_workspace': src_id,
+                'target_workspace': tgt_id,
+                'shared_tables': list(common)
+            }
+        return None
+
+    def query_lineage(self, notebook_path: str) -> Dict[str, Any]:
+        """Query lineage for a specific notebook across workspaces."""
+        results = []
+        for workspace in self.workspaces:
+            ws_data = self._fetch_workspace_lineage(workspace)
+            if notebook_path in ws_data.get('notebooks', []):
+                results.append(ws_data)
+        return {'notebook': notebook_path, 'found_in': results}

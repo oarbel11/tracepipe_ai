@@ -1,66 +1,73 @@
-import duckdb
 import json
+import sqlite3
+from typing import Dict, List, Any
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-import os
+from pathlib import Path
 
 class HistoricalLineageStore:
-    def __init__(self, db_path: str = 'lineage_history.duckdb'):
+    def __init__(self, db_path: str = 'lineage_history.db'):
         self.db_path = db_path
-        self.conn = duckdb.connect(db_path)
-        self._init_schema()
+        self._init_db()
 
-    def _init_schema(self):
-        self.conn.execute("""
+    def _init_db(self):
+        """Initialize SQLite database for historical lineage."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS lineage_snapshots (
-                snapshot_id VARCHAR PRIMARY KEY,
-                workspace VARCHAR,
-                snapshot_time TIMESTAMP,
-                lineage_data JSON
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                notebook_path TEXT NOT NULL,
+                lineage_data TEXT NOT NULL
             )
-        """)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS table_lineage_history (
-                id VARCHAR PRIMARY KEY,
-                table_fqn VARCHAR,
-                upstream_tables JSON,
-                downstream_tables JSON,
-                snapshot_time TIMESTAMP,
-                workspace VARCHAR
-            )
-        """)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_notebook_timestamp 
+            ON lineage_snapshots(notebook_path, timestamp)
+        ''')
+        conn.commit()
+        conn.close()
 
-    def snapshot_lineage(self, workspace: str, lineage_data: Dict[str, Any]) -> str:
-        snapshot_id = f"{workspace}_{datetime.now().isoformat()}"
-        self.conn.execute(
-            "INSERT INTO lineage_snapshots VALUES (?, ?, ?, ?)",
-            (snapshot_id, workspace, datetime.now(), json.dumps(lineage_data))
+    def snapshot_lineage(self, notebook_path: str, lineage_data: Dict[str, Any]):
+        """Store a lineage snapshot."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        timestamp = datetime.utcnow().isoformat()
+        cursor.execute(
+            'INSERT INTO lineage_snapshots (timestamp, notebook_path, lineage_data) VALUES (?, ?, ?)',
+            (timestamp, notebook_path, json.dumps(lineage_data))
         )
-        return snapshot_id
+        conn.commit()
+        conn.close()
 
-    def store_table_lineage(self, table_fqn: str, upstream: List[str], downstream: List[str], workspace: str):
-        record_id = f"{table_fqn}_{datetime.now().isoformat()}"
-        self.conn.execute(
-            "INSERT INTO table_lineage_history VALUES (?, ?, ?, ?, ?, ?)",
-            (record_id, table_fqn, json.dumps(upstream), json.dumps(downstream), datetime.now(), workspace)
-        )
+    def query_historical_lineage(self, notebook_path: str, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
+        """Query historical lineage for a notebook."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        query = 'SELECT timestamp, lineage_data FROM lineage_snapshots WHERE notebook_path = ?'
+        params = [notebook_path]
+        if start_date:
+            query += ' AND timestamp >= ?'
+            params.append(start_date)
+        if end_date:
+            query += ' AND timestamp <= ?'
+            params.append(end_date)
+        query += ' ORDER BY timestamp DESC'
+        cursor.execute(query, params)
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'timestamp': row[0],
+                'lineage_data': json.loads(row[1])
+            })
+        conn.close()
+        return results
 
-    def query_historical_lineage(self, table_fqn: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-        result = self.conn.execute(
-            """SELECT table_fqn, upstream_tables, downstream_tables, snapshot_time, workspace
-               FROM table_lineage_history
-               WHERE table_fqn = ? AND snapshot_time BETWEEN ? AND ?
-               ORDER BY snapshot_time DESC""",
-            (table_fqn, start_date, end_date)
-        ).fetchall()
-        return [{'table': r[0], 'upstream': json.loads(r[1]), 'downstream': json.loads(r[2]), 'time': r[3], 'workspace': r[4]} for r in result]
-
-    def get_snapshots(self, workspace: Optional[str] = None) -> List[Dict[str, Any]]:
-        if workspace:
-            result = self.conn.execute("SELECT * FROM lineage_snapshots WHERE workspace = ?", (workspace,)).fetchall()
-        else:
-            result = self.conn.execute("SELECT * FROM lineage_snapshots").fetchall()
-        return [{'id': r[0], 'workspace': r[1], 'time': r[2], 'data': json.loads(r[3])} for r in result]
-
-    def close(self):
-        self.conn.close()
+    def cleanup_old_snapshots(self, retention_days: int = 730):
+        """Remove snapshots older than retention period."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cutoff = datetime.utcnow().timestamp() - (retention_days * 86400)
+        cursor.execute('DELETE FROM lineage_snapshots WHERE timestamp < ?', (cutoff,))
+        conn.commit()
+        conn.close()
