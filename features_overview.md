@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-20
+
+### 🔗 Feature #42 — Robust Column Lineage for Complex Python/Scala Transformations and UDFs
+
+**What it is & why it matters:**
+While Tracepipe AI aims to provide column-level lineage for notebooks, achieving true precision through complex Python/Scala DataFrame operations and User-Defined Functions (UDFs) remains a significant challenge that even Databricks Unity Catalog struggles with. To be production-ready, this feature needs to consistently and accurately trace lineage through these difficult scenarios, including operations outside of direct SQL constructs, which often represent critical transformation logic for users.
+
+**How to use it:**
+
+See `tests/test_spark_lineage.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/55)
