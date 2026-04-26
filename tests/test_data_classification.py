@@ -1,61 +1,50 @@
 import pytest
 from scripts.data_classification.classifier import SensitiveDataClassifier, Classification
 from scripts.data_classification.policy_propagator import PolicyPropagator
+from scripts.data_classification.orchestrator import ClassificationOrchestrator
 
-def test_classifier_detects_pii():
+def test_classifier_detects_email():
     classifier = SensitiveDataClassifier()
-    results = classifier.classify_column('users', 'email')
-    assert len(results) == 1
-    assert results[0].classification_type == 'email'
-    assert 'PII' in results[0].policy_tags
+    result = classifier.classify_column(
+        "user_email",
+        ["test@example.com", "user@domain.org"],
+        "string"
+    )
+    assert result.column_name == "user_email"
+    assert result.sensitivity_level.value in ["confidential", "restricted"]
+    assert result.confidence > 0.7
 
-def test_classifier_detects_sensitive_data():
+def test_classifier_detects_ssn():
     classifier = SensitiveDataClassifier()
-    results = classifier.classify_column('patients', 'diagnosis')
-    assert len(results) == 1
-    assert results[0].classification_type == 'medical'
-    assert 'PHI' in results[0].policy_tags
-    assert 'sensitive' in results[0].policy_tags
+    result = classifier.classify_column(
+        "ssn",
+        ["123-45-6789", "987-65-4321"],
+        "string"
+    )
+    assert "ssn" in result.detected_patterns
+    assert result.sensitivity_level.value == "restricted"
 
-def test_classify_table():
-    classifier = SensitiveDataClassifier()
-    columns = ['customer_id', 'email', 'phone', 'address']
-    results = classifier.classify_table('customers', columns)
-    assert len(results) >= 3
-    types = [r.classification_type for r in results]
-    assert 'email' in types
-    assert 'phone' in types
+def test_policy_propagator_traverses_lineage():
+    lineage = {
+        "table_a": ["table_b", "table_c"],
+        "table_b": ["table_d"],
+        "table_c": []
+    }
+    propagator = PolicyPropagator(lineage)
+    downstream = propagator._traverse_downstream("table_a")
+    assert "table_a" in downstream
+    assert "table_b" in downstream
+    assert "table_d" in downstream
 
-def test_classify_catalog():
-    classifier = SensitiveDataClassifier()
-    schema = {'users': ['email', 'name'], 'orders': ['credit_card']}
-    results = classifier.classify_catalog('test_catalog', schema)
-    assert 'test_catalog.users' in results
-    assert len(results['test_catalog.users']) >= 1
-
-def test_policy_propagator_creates_policies():
-    classifier = SensitiveDataClassifier()
-    classifications = classifier.classify_catalog('catalog', {'table': ['email']})
-    propagator = PolicyPropagator()
-    propagator.propagate_policies(classifications)
-    policies = propagator.get_applied_policies()
-    assert 'catalog.table.email' in policies
-    assert len(policies['catalog.table.email']) > 0
-
-def test_policy_propagation_downstream():
-    classifier = SensitiveDataClassifier()
-    classifications = classifier.classify_catalog('catalog', {'source': ['email']})
-    propagator = PolicyPropagator()
-    lineage = [('catalog.source.email', 'catalog.target.user_email')]
-    propagator.propagate_policies(classifications, lineage)
-    policies = propagator.get_applied_policies()
-    assert 'catalog.target.user_email' in policies
-    assert len(policies['catalog.target.user_email']) > 0
-
-def test_policy_severity():
-    classifier = SensitiveDataClassifier()
-    results = classifier.classify_column('users', 'ssn')
-    propagator = PolicyPropagator()
-    policy = propagator.create_policy_from_classification(results[0])
-    assert policy.severity == 'high'
-    assert policy.rules['masking'] == 'required'
+def test_orchestrator_end_to_end():
+    lineage = {"source_table": ["dest_table"]}
+    orchestrator = ClassificationOrchestrator(lineage)
+    columns = {
+        "email": {"sample_values": ["test@example.com"], "data_type": "string"},
+        "name": {"sample_values": ["John Doe"], "data_type": "string"}
+    }
+    policies = orchestrator.classify_and_propagate("source_table", columns)
+    assert len(policies) > 0
+    report = orchestrator.generate_compliance_report()
+    assert report['total_columns'] == 2
+    assert report['sensitive_columns'] >= 1
