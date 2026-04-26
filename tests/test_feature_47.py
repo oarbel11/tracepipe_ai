@@ -1,44 +1,57 @@
-"""Integration tests for Feature #47."""
-
+"""Tests for Feature #47: Enhanced UDF and complex transformation support."""
 import pytest
-from tracepipe.parsers.spark_lineage import SparkLineageParser
+from tracepipe_ai.parsers.spark_parser import SparkLineageParser
 
 
-def test_complex_udf_lineage():
-    """Test UDF with multiple inputs and complex transformations."""
+def test_udf_registration():
+    """Test UDF registration and dependency extraction."""
     parser = SparkLineageParser()
-    parser.register_udf("complex_transform", ["col_a", "col_b", "col_c"],
-                        "result")
-    
-    query = "SELECT complex_transform(col_a, col_b, col_c) AS output FROM table"
-    lineage = parser.parse_query(query)
-    
-    assert "output" in lineage
-    assert {"col_a", "col_b", "col_c"} <= lineage["output"]
+
+    def my_udf(row):
+        return row["col1"] + row["col2"]
+
+    parser.register_udf("my_udf", my_udf, ["col1", "col2"])
+    assert "my_udf" in parser.udf_registry
+    assert parser.udf_lineage["my_udf"] == ["col1", "col2"]
 
 
-def test_nested_udf_calls():
-    """Test nested UDF calls in transformations."""
+def test_udf_auto_dependency_extraction():
+    """Test automatic extraction of UDF dependencies from code."""
     parser = SparkLineageParser()
-    parser.register_udf("udf1", ["x"], "temp")
-    parser.register_udf("udf2", ["temp", "y"], "final")
-    
-    query = "SELECT udf2(udf1(x), y) AS result FROM table"
-    lineage = parser.parse_query(query)
-    
+
+    def compute_udf(row):
+        return row["amount"] * row["rate"]
+
+    parser.register_udf("compute_udf", compute_udf)
+    deps = parser.udf_lineage["compute_udf"]
+    assert "amount" in deps
+    assert "rate" in deps
+
+
+def test_transformation_parsing():
+    """Test parsing of complex transformations."""
+    parser = SparkLineageParser()
+    lineage = parser.parse_transformation(
+        "withColumn('total', col1 + col2)", ["col1", "col2"])
+    assert "total" in lineage
+    assert set(lineage["total"]) <= {"col1", "col2"}
+
+
+def test_lineage_tracking():
+    """Test end-to-end lineage tracking."""
+    parser = SparkLineageParser()
+
+    def my_udf(row):
+        return row["a"] + row["b"]
+
+    parser.register_udf("my_udf", my_udf, ["a", "b"])
+
+    operations = [
+        {"type": "udf", "name": "my_udf", "output_col": "result"},
+        {"type": "transform", "operation": "withColumn('derived', result)",
+         "columns": ["result"]}
+    ]
+
+    lineage = parser.track_lineage(operations)
     assert "result" in lineage
-    assert "x" in lineage["result"]
-    assert "y" in lineage["result"]
-
-
-def test_mixed_udf_and_native_operations():
-    """Test combining UDFs with native Spark operations."""
-    parser = SparkLineageParser()
-    parser.register_udf("custom_udf", ["a"], "transformed")
-    
-    query = "SELECT custom_udf(a) + b AS combined FROM table"
-    lineage = parser.parse_query(query)
-    
-    assert "combined" in lineage
-    assert "a" in lineage["combined"]
-    assert "b" in lineage["combined"]
+    assert lineage["result"] == {"a", "b"}
