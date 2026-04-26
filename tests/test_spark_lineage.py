@@ -1,68 +1,82 @@
 import pytest
-from scripts.lineage_extractor import LineageExtractor, ColumnNode
+from scripts.lineage_extractor import SparkLineageExtractor
+from scripts.impact_analyzer import ImpactAnalyzer
+from scripts.lineage_graph import NodeType
 
-def test_lineage_extractor_init():
-    extractor = LineageExtractor()
-    assert extractor.graph is not None
-    assert extractor.integrator is not None
-    assert extractor.analyzer is not None
 
-def test_extract_lineage():
-    extractor = LineageExtractor()
-    result = extractor.extract_lineage("catalog.schema.table")
-    assert result['table'] == "catalog.schema.table"
-    assert 'upstream' in result
-    assert 'downstream' in result
+class MockDatabricksClient:
+    def __init__(self):
+        self.lineage_data = {}
 
-def test_column_lineage():
-    extractor = LineageExtractor()
-    col = ColumnNode("catalog", "schema", "table", "column")
-    lineage = extractor.get_column_lineage(col)
-    assert isinstance(lineage, list)
+    def get_table_lineage(self, table_name):
+        return self.lineage_data.get(table_name, {})
 
-def test_external_etl_integration():
-    extractor = LineageExtractor()
-    lineage_data = [
-        {'source_id': 's3://bucket/data', 'target_id': 'table:target',
-         'source_name': 'source', 'target_name': 'target'}
-    ]
-    extractor.integrate_etl_lineage('airflow', lineage_data)
-    impact = extractor.analyze_impact('s3://bucket/data')
-    assert impact['impacted_count'] >= 0
+    def set_lineage(self, table_name, upstream, downstream):
+        self.lineage_data[table_name] = {
+            'upstream_tables': upstream,
+            'downstream_tables': downstream
+        }
 
-def test_bi_integration():
-    extractor = LineageExtractor()
-    lineage_data = [
-        {'source_id': 'table:sales', 'report_id': 'report:dashboard',
-         'report_name': 'Sales Dashboard'}
-    ]
-    extractor.integrate_bi_lineage('tableau', lineage_data)
-    deps = extractor.analyze_dependencies('report:dashboard')
-    assert deps['dependency_count'] >= 0
 
-def test_file_lineage():
-    extractor = LineageExtractor()
-    extractor.integrate_file_lineage('/path/to/file.csv', 'table:data', 
-                                    'read')
-    impact = extractor.analyze_impact('file:/path/to/file.csv')
-    assert 'impacted_count' in impact
+@pytest.fixture
+def mock_client():
+    return MockDatabricksClient()
 
-def test_table_rename():
-    extractor = LineageExtractor()
-    extractor.extract_lineage('old_table')
+
+@pytest.fixture
+def extractor(mock_client):
+    return SparkLineageExtractor(mock_client)
+
+
+def test_extract_lineage(extractor, mock_client):
+    mock_client.set_lineage('target_table', ['source_table'], ['dest_table'])
+    graph = extractor.extract_lineage('target_table')
+    assert 'table:target_table' in graph.nodes
+    assert 'table:source_table' in graph.nodes
+
+
+def test_external_etl_integration(extractor):
+    etl_metadata = {
+        'job_name': 'etl_job_1',
+        'sources': ['src_table'],
+        'targets': ['tgt_table']
+    }
+    extractor.integrate_external_etl(etl_metadata)
+    assert 'etl:etl_job_1' in extractor.graph.nodes
+
+
+def test_bi_integration(extractor):
+    bi_metadata = {
+        'report_name': 'sales_report',
+        'sources': ['sales_table']
+    }
+    extractor.integrate_bi_tool(bi_metadata)
+    assert 'bi:sales_report' in extractor.graph.nodes
+
+
+def test_file_lineage(extractor):
+    extractor.track_file_lineage('/data/output.parquet', ['source_table'],
+                                 'write')
+    assert 'file:/data/output.parquet' in extractor.graph.nodes
+
+
+def test_table_rename(extractor):
+    extractor.graph.add_node('table:old_table', 'table', 'old_table', {})
     extractor.handle_table_rename('old_table', 'new_table')
-    assert extractor.graph.get_node('table:new_table') is not None
+    assert 'table:new_table' in extractor.graph.nodes
 
-def test_impact_analysis():
-    extractor = LineageExtractor()
-    extractor.extract_lineage('source_table')
-    impact = extractor.analyze_impact('table:source_table')
-    assert 'impacted_count' in impact
-    assert 'impacted_nodes' in impact
 
-def test_dependency_analysis():
-    extractor = LineageExtractor()
+def test_impact_analysis(extractor, mock_client):
+    mock_client.set_lineage('src', [], ['tgt'])
+    extractor.extract_lineage('src')
+    analyzer = ImpactAnalyzer(extractor.graph)
+    impact = analyzer.analyze_downstream_impact('table:src')
+    assert impact['total_count'] >= 0
+
+
+def test_dependency_analysis(extractor, mock_client):
+    mock_client.set_lineage('target_table', ['source_table'], [])
     extractor.extract_lineage('target_table')
-    deps = extractor.analyze_dependencies('table:target_table')
-    assert 'dependency_count' in deps
-    assert 'dependency_nodes' in deps
+    analyzer = ImpactAnalyzer(extractor.graph)
+    deps = analyzer.analyze_upstream_dependencies('table:target_table')
+    assert deps['total_count'] >= 0

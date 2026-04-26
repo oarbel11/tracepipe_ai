@@ -1,23 +1,23 @@
 from enum import Enum
-from typing import Dict, List, Set, Optional
-from dataclasses import dataclass, field
+from typing import Dict, List, Set, Any, Optional
 
 
 class NodeType(Enum):
-    TABLE = "table"
-    VIEW = "view"
-    FILE = "file"
-    NOTEBOOK = "notebook"
-    PIPELINE = "pipeline"
-    BI_REPORT = "bi_report"
+    TABLE = 'table'
+    VIEW = 'view'
+    FILE = 'file'
+    EXTERNAL_TABLE = 'external_table'
+    ETL_JOB = 'etl_job'
+    BI_REPORT = 'bi_report'
 
 
-@dataclass
 class LineageNode:
-    id: str
-    name: str
-    node_type: NodeType
-    metadata: Dict = field(default_factory=dict)
+    def __init__(self, node_id: str, node_type: str, name: str,
+                 metadata: Dict[str, Any]):
+        self.node_id = node_id
+        self.node_type = node_type
+        self.name = name
+        self.metadata = metadata or {}
 
 
 class LineageGraph:
@@ -26,48 +26,51 @@ class LineageGraph:
         self.edges: Dict[str, Set[str]] = {}
         self.reverse_edges: Dict[str, Set[str]] = {}
 
-    def add_node(self, node: LineageNode):
-        self.nodes[node.id] = node
-        if node.id not in self.edges:
-            self.edges[node.id] = set()
-        if node.id not in self.reverse_edges:
-            self.reverse_edges[node.id] = set()
+    def add_node(self, node_id: str, node_type: str, name: str,
+                 metadata: Dict[str, Any]) -> None:
+        node = LineageNode(node_id, node_type, name, metadata)
+        self.nodes[node_id] = node
+        if node_id not in self.edges:
+            self.edges[node_id] = set()
+        if node_id not in self.reverse_edges:
+            self.reverse_edges[node_id] = set()
 
-    def add_edge(self, from_id: str, to_id: str):
-        if from_id not in self.edges:
-            self.edges[from_id] = set()
-        if to_id not in self.reverse_edges:
-            self.reverse_edges[to_id] = set()
-        self.edges[from_id].add(to_id)
-        self.reverse_edges[to_id].add(from_id)
+    def add_edge(self, source_id: str, target_id: str) -> None:
+        if source_id not in self.edges:
+            self.edges[source_id] = set()
+        if target_id not in self.reverse_edges:
+            self.reverse_edges[target_id] = set()
+        self.edges[source_id].add(target_id)
+        self.reverse_edges[target_id].add(source_id)
 
-    def get_node(self, node_id: str) -> Optional[LineageNode]:
-        return self.nodes.get(node_id)
-
-    def get_downstream(self, node_id: str) -> List[str]:
-        visited = set()
+    def get_downstream(self, node_id: str) -> List[LineageNode]:
         result = []
-        self._dfs_downstream(node_id, visited, result)
+        visited = set()
+        self._traverse_downstream(node_id, visited, result)
         return result
 
-    def _dfs_downstream(self, node_id: str, visited: Set[str], result: List[str]):
-        if node_id in visited:
+    def _traverse_downstream(self, node_id: str, visited: Set[str],
+                             result: List[LineageNode]) -> None:
+        if node_id in visited or node_id not in self.edges:
             return
         visited.add(node_id)
-        for child in self.edges.get(node_id, []):
-            result.append(child)
-            self._dfs_downstream(child, visited, result)
+        for target_id in self.edges.get(node_id, []):
+            if target_id in self.nodes:
+                result.append(self.nodes[target_id])
+            self._traverse_downstream(target_id, visited, result)
 
-    def get_upstream(self, node_id: str) -> List[str]:
-        visited = set()
+    def get_upstream(self, node_id: str) -> List[LineageNode]:
         result = []
-        self._dfs_upstream(node_id, visited, result)
+        visited = set()
+        self._traverse_upstream(node_id, visited, result)
         return result
 
-    def _dfs_upstream(self, node_id: str, visited: Set[str], result: List[str]):
-        if node_id in visited:
+    def _traverse_upstream(self, node_id: str, visited: Set[str],
+                           result: List[LineageNode]) -> None:
+        if node_id in visited or node_id not in self.reverse_edges:
             return
         visited.add(node_id)
-        for parent in self.reverse_edges.get(node_id, []):
-            result.append(parent)
-            self._dfs_upstream(parent, visited, result)
+        for source_id in self.reverse_edges.get(node_id, []):
+            if source_id in self.nodes:
+                result.append(self.nodes[source_id])
+            self._traverse_upstream(source_id, visited, result)
