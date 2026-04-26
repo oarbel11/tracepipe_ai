@@ -1,67 +1,87 @@
 """Spark lineage parser with UDF and complex transformation support."""
 import ast
-import inspect
-from typing import Dict, List, Set, Any, Optional, Callable
+import re
+from typing import Dict, List, Set
 
 
 class SparkLineageParser:
-    """Enhanced Spark lineage parser supporting UDFs and transformations."""
+    """Parse Spark code to extract column-level lineage."""
 
     def __init__(self):
-        self.udf_registry: Dict[str, Callable] = {}
-        self.udf_lineage: Dict[str, List[str]] = {}
+        self.udfs = {}
+        self.lineage = {}
 
-    def register_udf(self, name: str, func: Callable,
-                     input_cols: Optional[List[str]] = None):
-        """Register a UDF with its column dependencies."""
-        self.udf_registry[name] = func
-        if input_cols:
-            self.udf_lineage[name] = input_cols
-        else:
-            self.udf_lineage[name] = self._extract_udf_dependencies(func)
+    def parse_code(self, code: str) -> Dict[str, List[str]]:
+        """Parse Spark code and extract column lineage."""
+        self.udfs = {}
+        self.lineage = {}
+        tree = ast.parse(code)
+        self._extract_udfs(tree)
+        self._extract_lineage(tree)
+        return self.lineage
 
-    def _extract_udf_dependencies(self, func: Callable) -> List[str]:
-        """Extract column dependencies from UDF source code."""
-        try:
-            source = inspect.getsource(func)
-            tree = ast.parse(source)
-            deps = set()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Subscript):
+    def _extract_udfs(self, tree: ast.AST):
+        """Extract UDF definitions from AST."""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                if any(isinstance(d, ast.Name) and d.id == 'udf' 
+                       for d in ast.walk(node)):
+                    self.udfs[node.name] = self._get_udf_deps(node)
+
+    def _get_udf_deps(self, func_node: ast.FunctionDef) -> Set[str]:
+        """Get column dependencies from UDF function."""
+        deps = set()
+        for node in ast.walk(func_node):
+            if isinstance(node, ast.Subscript):
+                if isinstance(node.value, ast.Name):
                     if isinstance(node.slice, ast.Constant):
                         deps.add(node.slice.value)
-            return list(deps)
-        except Exception:
-            return []
+        return deps
 
-    def parse_transformation(self, operation: str,
-                           columns: List[str]) -> Dict[str, List[str]]:
-        """Parse transformation to extract column lineage."""
-        lineage = {}
-        if "withColumn" in operation:
-            parts = operation.split(",")
-            if len(parts) >= 2:
-                new_col = parts[0].split("(")[-1].strip().strip("'\"")
-                deps = [c.strip() for c in columns if c in operation]
-                lineage[new_col] = deps
-        elif "select" in operation:
-            for col in columns:
-                lineage[col] = [col]
-        return lineage
+    def _extract_lineage(self, tree: ast.AST):
+        """Extract lineage from DataFrame operations."""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute):
+                    method = node.func.attr
+                    if method == 'withColumn':
+                        self._handle_with_column(node)
+                    elif method == 'select':
+                        self._handle_select(node)
 
-    def track_lineage(self, operations: List[Dict[str, Any]]) -> Dict[str, Set[str]]:
-        """Track lineage through multiple operations."""
-        lineage: Dict[str, Set[str]] = {}
-        for op in operations:
-            op_type = op.get("type", "")
-            if op_type == "udf":
-                udf_name = op.get("name", "")
-                output_col = op.get("output_col", "")
-                if udf_name in self.udf_lineage:
-                    lineage[output_col] = set(self.udf_lineage[udf_name])
-            elif op_type == "transform":
-                trans_lineage = self.parse_transformation(
-                    op.get("operation", ""), op.get("columns", []))
-                for col, deps in trans_lineage.items():
-                    lineage[col] = set(deps)
-        return lineage
+    def _handle_with_column(self, node: ast.Call):
+        """Handle withColumn operations."""
+        if len(node.args) >= 2:
+            col_name = self._get_const(node.args[0])
+            deps = self._get_deps(node.args[1])
+            if col_name:
+                self.lineage[col_name] = sorted(deps)
+
+    def _handle_select(self, node: ast.Call):
+        """Handle select operations."""
+        for arg in node.args:
+            deps = self._get_deps(arg)
+            if deps:
+                col_name = self._get_const(arg)
+                if col_name:
+                    self.lineage[col_name] = sorted(deps)
+
+    def _get_deps(self, node: ast.AST) -> Set[str]:
+        """Get column dependencies from an expression."""
+        deps = set()
+        for n in ast.walk(node):
+            if isinstance(n, ast.Call):
+                if isinstance(n.func, ast.Attribute) and n.func.attr == 'col':
+                    if n.args:
+                        dep = self._get_const(n.args[0])
+                        if dep:
+                            deps.add(dep)
+                elif isinstance(n.func, ast.Name) and n.func.id in self.udfs:
+                    deps.update(self.udfs[n.func.id])
+        return deps
+
+    def _get_const(self, node: ast.AST) -> str:
+        """Extract string constant from AST node."""
+        if isinstance(node, ast.Constant):
+            return str(node.value)
+        return ""
