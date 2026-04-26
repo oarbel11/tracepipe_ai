@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-26
+
+### 🔗 Feature #46 — Automated Sensitive Data Classification & Policy Propagation
+
+**What it is & why it matters:**
+Organizations face significant challenges maintaining consistent data governance and compliance when Unity Catalog's policies don't extend easily across their entire data stack. This feature will enable Tracepipe AI to automatically detect and classify sensitive data (e.g., PII, PHI) within Databricks and integrated external data sources. Leveraging comprehensive lineage, it will then automatically propagate these classifications and associated access or masking policies to all downstream data assets, ensuring consistent governance and significantly reducing manual compliance efforts.
+
+**How to use it:**
+
+See `tests/test_data_classification.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/57)
