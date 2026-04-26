@@ -1,80 +1,78 @@
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Any, Optional
+from scripts.lineage_graph import LineageGraph, LineageNode
 
-class ColumnNode:
-    def __init__(self, dataframe: str, column: str):
-        self.dataframe = dataframe
-        self.column = column
-        self.dependencies = []
 
-    def __repr__(self):
-        return f"{self.dataframe}.{self.column}"
+class SparkLineageExtractor:
+    def __init__(self, databricks_client):
+        self.client = databricks_client
+        self.graph = LineageGraph()
 
-    def __eq__(self, other):
-        if not isinstance(other, ColumnNode):
-            return False
-        return self.dataframe == other.dataframe and self.column == other.column
+    def extract_lineage(self, table_name: str) -> LineageGraph:
+        table_id = f"table:{table_name}"
+        self.graph.add_node(table_id, 'table', table_name, {})
+        
+        lineage_info = self.client.get_table_lineage(table_name)
+        
+        for upstream in lineage_info.get('upstream_tables', []):
+            upstream_id = f"table:{upstream}"
+            self.graph.add_node(upstream_id, 'table', upstream, {})
+            self.graph.add_edge(upstream_id, table_id)
+        
+        for downstream in lineage_info.get('downstream_tables', []):
+            downstream_id = f"table:{downstream}"
+            self.graph.add_node(downstream_id, 'table', downstream, {})
+            self.graph.add_edge(table_id, downstream_id)
+        
+        return self.graph
 
-    def __hash__(self):
-        return hash((self.dataframe, self.column))
+    def integrate_external_etl(self, etl_metadata: Dict[str, Any]) -> None:
+        etl_id = f"etl:{etl_metadata['job_name']}"
+        self.graph.add_node(etl_id, 'etl_job', etl_metadata['job_name'],
+                           etl_metadata)
+        
+        for source in etl_metadata.get('sources', []):
+            source_id = f"table:{source}"
+            if source_id not in self.graph.nodes:
+                self.graph.add_node(source_id, 'table', source, {})
+            self.graph.add_edge(source_id, etl_id)
+        
+        for target in etl_metadata.get('targets', []):
+            target_id = f"table:{target}"
+            if target_id not in self.graph.nodes:
+                self.graph.add_node(target_id, 'table', target, {})
+            self.graph.add_edge(etl_id, target_id)
 
-class LineageExtractor:
-    def __init__(self, parsed_data: Dict):
-        self.parsed_data = parsed_data
-        self.nodes = {}
-        self.edges = []
+    def integrate_bi_tool(self, bi_metadata: Dict[str, Any]) -> None:
+        bi_id = f"bi:{bi_metadata['report_name']}"
+        self.graph.add_node(bi_id, 'bi_report', bi_metadata['report_name'],
+                           bi_metadata)
+        
+        for source in bi_metadata.get('sources', []):
+            source_id = f"table:{source}"
+            if source_id not in self.graph.nodes:
+                self.graph.add_node(source_id, 'table', source, {})
+            self.graph.add_edge(source_id, bi_id)
 
-    def build_lineage(self) -> Dict[str, List[ColumnNode]]:
-        operations = self.parsed_data.get('operations', [])
-        for op in operations:
-            self._process_operation(op)
-        return self._build_lineage_dict()
+    def track_file_lineage(self, file_path: str, related_tables: List[str],
+                          operation: str) -> None:
+        file_id = f"file:{file_path}"
+        self.graph.add_node(file_id, 'file', file_path,
+                           {'operation': operation})
+        
+        for table in related_tables:
+            table_id = f"table:{table}"
+            if table_id not in self.graph.nodes:
+                self.graph.add_node(table_id, 'table', table, {})
+            if operation == 'write':
+                self.graph.add_edge(table_id, file_id)
+            else:
+                self.graph.add_edge(file_id, table_id)
 
-    def _process_operation(self, op: Dict):
-        target_df = op['target']
-        source_df = op.get('source')
-        operation = op['operation']
-        columns = op.get('columns', [])
-
-        if operation == 'select':
-            for col in columns:
-                target_node = self._get_or_create_node(target_df, col)
-                if source_df:
-                    source_node = self._get_or_create_node(source_df, col)
-                    target_node.dependencies.append(source_node)
-                    self.edges.append((source_node, target_node))
-        elif operation == 'withColumn':
-            if columns:
-                target_col = columns[0]
-                target_node = self._get_or_create_node(target_df, target_col)
-                if source_df:
-                    for col in columns[1:]:
-                        source_node = self._get_or_create_node(source_df, col)
-                        target_node.dependencies.append(source_node)
-                        self.edges.append((source_node, target_node))
-
-    def _get_or_create_node(self, df: str, col: str) -> ColumnNode:
-        key = f"{df}.{col}"
-        if key not in self.nodes:
-            self.nodes[key] = ColumnNode(df, col)
-        return self.nodes[key]
-
-    def _build_lineage_dict(self) -> Dict[str, List[ColumnNode]]:
-        result = {}
-        for key, node in self.nodes.items():
-            result[key] = node.dependencies
-        return result
-
-    def get_upstream_columns(self, df: str, col: str) -> List[ColumnNode]:
-        node = self.nodes.get(f"{df}.{col}")
-        if not node:
-            return []
-        return self._get_all_upstream(node, set())
-
-    def _get_all_upstream(self, node: ColumnNode, visited: Set) -> List[ColumnNode]:
-        if node in visited:
-            return []
-        visited.add(node)
-        result = list(node.dependencies)
-        for dep in node.dependencies:
-            result.extend(self._get_all_upstream(dep, visited))
-        return result
+    def handle_table_rename(self, old_name: str, new_name: str) -> None:
+        old_id = f"table:{old_name}"
+        new_id = f"table:{new_name}"
+        
+        if old_id in self.graph.nodes:
+            old_node = self.graph.nodes[old_id]
+            self.graph.add_node(new_id, old_node.node_type, new_name,
+                               old_node.metadata)

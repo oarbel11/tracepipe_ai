@@ -113,3 +113,18 @@ Improve the Spark analysis engine to reliably extract column-level lineage even 
 See `tests/test_spark_lineage.py` for usage examples.
 
 🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/42)
+
+---
+
+## 📅 2026-04-26
+
+### 🔗 Feature #45 — Enhanced Cross-System Lineage & Impact Analysis
+
+**What it is & why it matters:**
+Databricks Unity Catalog's lineage primarily focuses within its own environment, failing to capture data flow comprehensively from source systems to downstream BI tools or for data written directly to files. This feature will provide a holistic view of data lineage across the entire data ecosystem by integrating with external sources, ETL/ELT tools, and BI platforms, offering robust impact analysis capabilities to understand upstream dependencies and downstream consumers for any data asset, including accurate handling of table renames and file-based operations.
+
+**How to use it:**
+
+See `tests/test_cross_system_lineage.py` for usage examples.
+
+🔗 [View PR](https://github.com/oarbel11/tracepipe_ai/pull/56)
