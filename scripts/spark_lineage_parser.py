@@ -1,72 +1,58 @@
+import re
 import ast
-from typing import List, Dict, Any, Optional
+from typing import Dict, List, Set, Tuple, Optional
+from scripts.udf_lineage_tracker import UDFLineageTracker
 
 class SparkLineageParser:
     def __init__(self):
-        self.dataframes = {}
-        self.udfs = {}
-        self.operations = []
-
-    def parse_code(self, code: str) -> Dict[str, Any]:
-        tree = ast.parse(code)
-        self._analyze_tree(tree)
+        self.tables: Dict[str, Set[str]] = {}
+        self.column_lineage: Dict[Tuple[str, str], Set[Tuple[str, str]]] = {}
+        self.udf_tracker = UDFLineageTracker()
+    
+    def parse_spark_code(self, code: str) -> Dict:
+        self.udf_tracker.extract_udf_lineage(code=code)
+        self._extract_table_reads(code)
+        self._extract_column_transformations(code)
+        return self._build_lineage_graph()
+    
+    def _extract_table_reads(self, code: str):
+        read_patterns = [
+            r'spark\.read\.table\(["\']([^"\')]+)["\']\)',
+            r'spark\.table\(["\']([^"\')]+)["\']\)',
+            r'FROM\s+([\w.]+)',
+        ]
+        for pattern in read_patterns:
+            for match in re.finditer(pattern, code, re.IGNORECASE):
+                table_name = match.group(1)
+                self.tables[table_name] = set()
+    
+    def _extract_column_transformations(self, code: str):
+        select_pattern = r'\.select\(([^)]+)\)'
+        for match in re.finditer(select_pattern, code):
+            cols = [c.strip().strip('"\' ') for c in match.group(1).split(',')]
+            for col in cols:
+                col_clean = re.sub(r'col\(["\']([^"\')]+)["\']\)', r'\1', col)
+                if ' as ' in col_clean.lower():
+                    parts = re.split(r'\s+as\s+', col_clean, flags=re.IGNORECASE)
+                    if len(parts) == 2:
+                        source, target = parts[0].strip(), parts[1].strip()
+                        self.column_lineage[('output', target)] = {('input', source)}
+        
+        for col_name, deps in self.udf_tracker.column_lineage.items():
+            self.column_lineage[('output', col_name)] = {('input', d) for d in deps}
+    
+    def _build_lineage_graph(self) -> Dict:
         return {
-            'dataframes': self.dataframes,
-            'udfs': self.udfs,
-            'operations': self.operations
+            "tables": list(self.tables.keys()),
+            "column_lineage": {
+                f"{t}.{c}": [f"{st}.{sc}" for st, sc in sources]
+                for (t, c), sources in self.column_lineage.items()
+            },
+            "udfs": list(self.udf_tracker.udfs.keys())
         }
-
-    def _analyze_tree(self, tree: ast.AST):
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                self._process_assignment(node)
-            elif isinstance(node, ast.FunctionDef):
-                self._process_function(node)
-
-    def _process_assignment(self, node: ast.Assign):
-        if not node.targets or not isinstance(node.value, ast.Call):
-            return
-        target = self._get_name(node.targets[0])
-        if not target:
-            return
-        call_info = self._analyze_call(node.value)
-        if call_info:
-            self.dataframes[target] = call_info
-            self.operations.append({
-                'target': target,
-                'operation': call_info['operation'],
-                'source': call_info.get('source'),
-                'columns': call_info.get('columns', [])
-            })
-
-    def _analyze_call(self, node: ast.Call) -> Optional[Dict[str, Any]]:
-        if isinstance(node.func, ast.Attribute):
-            obj_name = self._get_name(node.func.value)
-            method = node.func.attr
-            if method in ['select', 'withColumn', 'filter', 'groupBy']:
-                cols = [self._extract_column(arg) for arg in node.args]
-                return {'operation': method, 'source': obj_name, 'columns': cols}
-        return None
-
-    def _extract_column(self, node: ast.AST) -> str:
-        if isinstance(node, ast.Constant):
-            return str(node.value)
-        elif isinstance(node, ast.Name):
-            return node.id
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == 'col' and node.args:
-                return self._extract_column(node.args[0])
-        return 'unknown'
-
-    def _process_function(self, node: ast.FunctionDef):
-        if any(dec.id == 'udf' for dec in node.decorator_list if isinstance(dec, ast.Name)):
-            self.udfs[node.name] = self._analyze_udf(node)
-
-    def _analyze_udf(self, node: ast.FunctionDef) -> Dict[str, Any]:
-        params = [arg.arg for arg in node.args.args]
-        return {'name': node.name, 'params': params}
-
-    def _get_name(self, node: ast.AST) -> Optional[str]:
-        if isinstance(node, ast.Name):
-            return node.id
-        return None
+    
+    def get_column_lineage(self, table: str, column: str) -> List[str]:
+        key = (table, column)
+        if key in self.column_lineage:
+            return [f"{t}.{c}" for t, c in self.column_lineage[key]]
+        return []
