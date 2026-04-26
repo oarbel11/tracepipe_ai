@@ -1,79 +1,84 @@
 import pytest
 from scripts.lineage_graph import LineageGraph, LineageNode, NodeType
-from scripts.external_lineage_integrator import ExternalLineageIntegrator
-from scripts.impact_analyzer import ImpactAnalyzer
+from scripts.cross_system_lineage import CrossSystemLineage
 
-def test_lineage_graph_creation():
-    graph = LineageGraph()
-    assert graph is not None
-    assert len(graph.nodes) == 0
 
-def test_add_nodes_and_edges():
-    graph = LineageGraph()
-    node1 = LineageNode(id="table1", node_type=NodeType.TABLE, system="databricks", metadata={})
-    node2 = LineageNode(id="table2", node_type=NodeType.TABLE, system="databricks", metadata={})
-    graph.add_node(node1)
-    graph.add_node(node2)
-    graph.add_edge("table1", "table2")
-    assert len(graph.nodes) == 2
-    assert "table2" in graph.get_downstream("table1")
-    assert "table1" in graph.get_upstream("table2")
+def test_node_type_enum():
+    assert NodeType.TABLE.value == "table"
+    assert NodeType.VIEW.value == "view"
+    assert NodeType.FILE.value == "file"
 
-def test_external_lineage_file():
-    graph = LineageGraph()
-    integrator = ExternalLineageIntegrator(graph)
-    integrator.integrate_file_lineage("/data/output.csv", ["table1", "table2"])
-    assert "file:///data/output.csv" in graph.nodes
-    downstream = graph.get_downstream("table1")
-    assert "file:///data/output.csv" in downstream
 
-def test_external_lineage_bi():
-    graph = LineageGraph()
-    integrator = ExternalLineageIntegrator(graph)
-    integrator.integrate_bi_lineage("report_123", ["table1"], "powerbi")
-    assert "powerbi://report_123" in graph.nodes
-    downstream = graph.get_downstream("table1")
-    assert "powerbi://report_123" in downstream
+def test_lineage_node_creation():
+    node = LineageNode(
+        id="test_table",
+        name="test_table",
+        node_type=NodeType.TABLE,
+        metadata={"catalog": "main"}
+    )
+    assert node.id == "test_table"
+    assert node.node_type == NodeType.TABLE
 
-def test_external_lineage_etl():
-    graph = LineageGraph()
-    integrator = ExternalLineageIntegrator(graph)
-    integrator.integrate_etl_lineage("job_456", ["table1"], ["table2"], "airflow")
-    assert "airflow://job_456" in graph.nodes
-    downstream = graph.get_downstream("table1")
-    assert "airflow://job_456" in downstream
-    downstream_etl = graph.get_downstream("airflow://job_456")
-    assert "table2" in downstream_etl
 
-def test_impact_analyzer_downstream():
+def test_lineage_graph_add_node():
     graph = LineageGraph()
-    node1 = LineageNode(id="table1", node_type=NodeType.TABLE, system="databricks", metadata={})
-    node2 = LineageNode(id="table2", node_type=NodeType.TABLE, system="databricks", metadata={})
-    graph.add_node(node1)
-    graph.add_node(node2)
-    graph.add_edge("table1", "table2")
-    analyzer = ImpactAnalyzer(graph)
-    impact = analyzer.analyze_downstream_impact("table1")
-    assert impact["impacted_count"] == 1
-    assert impact["impacted_nodes"][0]["id"] == "table2"
+    node = LineageNode("t1", "table1", NodeType.TABLE)
+    graph.add_node(node)
+    assert graph.get_node("t1") == node
 
-def test_impact_analyzer_upstream():
-    graph = LineageGraph()
-    node1 = LineageNode(id="table1", node_type=NodeType.TABLE, system="databricks", metadata={})
-    node2 = LineageNode(id="table2", node_type=NodeType.TABLE, system="databricks", metadata={})
-    graph.add_node(node1)
-    graph.add_node(node2)
-    graph.add_edge("table1", "table2")
-    analyzer = ImpactAnalyzer(graph)
-    dependencies = analyzer.analyze_upstream_dependencies("table2")
-    assert dependencies["dependency_count"] == 1
-    assert dependencies["dependency_nodes"][0]["id"] == "table1"
 
-def test_table_rename():
+def test_lineage_graph_add_edge():
     graph = LineageGraph()
-    node1 = LineageNode(id="old_table", node_type=NodeType.TABLE, system="databricks", metadata={})
-    graph.add_node(node1)
-    analyzer = ImpactAnalyzer(graph)
-    analyzer.handle_table_rename("old_table", "new_table")
-    assert graph.resolve_id("old_table") == "new_table"
-    assert "new_table" in graph.nodes
+    graph.add_node(LineageNode("t1", "table1", NodeType.TABLE))
+    graph.add_node(LineageNode("t2", "table2", NodeType.TABLE))
+    graph.add_edge("t1", "t2")
+    assert "t2" in graph.edges["t1"]
+
+
+def test_get_downstream():
+    graph = LineageGraph()
+    graph.add_node(LineageNode("t1", "table1", NodeType.TABLE))
+    graph.add_node(LineageNode("t2", "table2", NodeType.TABLE))
+    graph.add_node(LineageNode("t3", "table3", NodeType.TABLE))
+    graph.add_edge("t1", "t2")
+    graph.add_edge("t2", "t3")
+    downstream = graph.get_downstream("t1")
+    assert "t2" in downstream
+    assert "t3" in downstream
+
+
+def test_get_upstream():
+    graph = LineageGraph()
+    graph.add_node(LineageNode("t1", "table1", NodeType.TABLE))
+    graph.add_node(LineageNode("t2", "table2", NodeType.TABLE))
+    graph.add_edge("t1", "t2")
+    upstream = graph.get_upstream("t2")
+    assert "t1" in upstream
+
+
+def test_cross_system_add_table():
+    lineage = CrossSystemLineage()
+    lineage.add_table("catalog.schema.table1")
+    node = lineage.graph.get_node("catalog.schema.table1")
+    assert node is not None
+    assert node.node_type == NodeType.TABLE
+
+
+def test_cross_system_impact_analysis():
+    lineage = CrossSystemLineage()
+    lineage.add_table("t1")
+    lineage.add_table("t2")
+    lineage.add_dependency("t1", "t2")
+    result = lineage.get_impact_analysis("t1")
+    assert result["downstream_count"] == 1
+    assert "t2" in result["downstream"]
+
+
+def test_handle_table_rename():
+    lineage = CrossSystemLineage()
+    lineage.add_table("old_table")
+    lineage.add_table("downstream_table")
+    lineage.add_dependency("old_table", "downstream_table")
+    lineage.handle_table_rename("old_table", "new_table")
+    result = lineage.get_impact_analysis("new_table")
+    assert "downstream_table" in result["downstream"]
