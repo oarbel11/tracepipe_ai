@@ -1,5 +1,5 @@
-from typing import Dict, List, Optional
-from scripts.lineage_graph import LineageGraph, LineageNode
+from typing import Dict, List
+from scripts.lineage_graph import LineageGraph, LineageNode, NodeType
 import os
 import json
 
@@ -7,67 +7,49 @@ class ExternalLineageIntegrator:
     def __init__(self, graph: LineageGraph):
         self.graph = graph
 
-    def ingest_file_lineage(self, file_path: str, target_table: str, 
-                           system: str = "file_system") -> None:
+    def integrate_file_lineage(self, file_path: str, source_tables: List[str]):
         file_node = LineageNode(
-            node_id=file_path,
-            node_type="file",
-            system=system,
-            metadata={"path": file_path, "exists": os.path.exists(file_path)}
+            id=f"file://{file_path}",
+            node_type=NodeType.FILE,
+            system="filesystem",
+            metadata={"path": file_path}
         )
         self.graph.add_node(file_node)
-        self.graph.add_edge(file_path, target_table, 
-                          {"operation": "file_load", "system": system})
-
-    def ingest_bi_lineage(self, dashboard_id: str, source_tables: List[str],
-                         bi_tool: str = "powerbi") -> None:
-        dashboard_node = LineageNode(
-            node_id=dashboard_id,
-            node_type="dashboard",
-            system=bi_tool,
-            metadata={"tool": bi_tool}
-        )
-        self.graph.add_node(dashboard_node)
         for table in source_tables:
-            self.graph.add_edge(table, dashboard_id, 
-                              {"operation": "bi_query", "tool": bi_tool})
+            self.graph.add_edge(table, file_node.id)
 
-    def ingest_etl_lineage(self, job_id: str, source_tables: List[str],
-                          target_tables: List[str], etl_tool: str = "spark") -> None:
-        job_node = LineageNode(
-            node_id=job_id,
-            node_type="job",
-            system=etl_tool,
-            metadata={"tool": etl_tool}
+    def integrate_bi_lineage(self, report_id: str, source_tables: List[str], bi_system: str = "powerbi"):
+        bi_node = LineageNode(
+            id=f"{bi_system}://{report_id}",
+            node_type=NodeType.BI_REPORT,
+            system=bi_system,
+            metadata={"report_id": report_id}
         )
-        self.graph.add_node(job_node)
-        for source in source_tables:
-            self.graph.add_edge(source, job_id, 
-                              {"operation": "read", "tool": etl_tool})
-        for target in target_tables:
-            self.graph.add_edge(job_id, target, 
-                              {"operation": "write", "tool": etl_tool})
+        self.graph.add_node(bi_node)
+        for table in source_tables:
+            self.graph.add_edge(table, bi_node.id)
 
-    def ingest_from_config(self, config: Dict) -> None:
-        if "files" in config:
-            for file_lineage in config["files"]:
-                self.ingest_file_lineage(
-                    file_lineage["path"],
-                    file_lineage["target_table"],
-                    file_lineage.get("system", "file_system")
-                )
-        if "bi_dashboards" in config:
-            for dashboard in config["bi_dashboards"]:
-                self.ingest_bi_lineage(
-                    dashboard["id"],
-                    dashboard["source_tables"],
-                    dashboard.get("tool", "powerbi")
-                )
-        if "etl_jobs" in config:
-            for job in config["etl_jobs"]:
-                self.ingest_etl_lineage(
-                    job["id"],
-                    job["sources"],
-                    job["targets"],
-                    job.get("tool", "spark")
-                )
+    def integrate_etl_lineage(self, job_id: str, source_tables: List[str], target_tables: List[str], etl_system: str = "airflow"):
+        etl_node = LineageNode(
+            id=f"{etl_system}://{job_id}",
+            node_type=NodeType.ETL_JOB,
+            system=etl_system,
+            metadata={"job_id": job_id}
+        )
+        self.graph.add_node(etl_node)
+        for source in source_tables:
+            self.graph.add_edge(source, etl_node.id)
+        for target in target_tables:
+            self.graph.add_edge(etl_node.id, target)
+
+    def load_from_config(self, config_path: str):
+        if not os.path.exists(config_path):
+            return
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        for file_lineage in config.get('files', []):
+            self.integrate_file_lineage(file_lineage['path'], file_lineage['sources'])
+        for bi_lineage in config.get('bi_reports', []):
+            self.integrate_bi_lineage(bi_lineage['id'], bi_lineage['sources'], bi_lineage.get('system', 'powerbi'))
+        for etl_lineage in config.get('etl_jobs', []):
+            self.integrate_etl_lineage(etl_lineage['id'], etl_lineage['sources'], etl_lineage['targets'], etl_lineage.get('system', 'airflow'))
