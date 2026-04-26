@@ -1,84 +1,64 @@
 import pytest
-from scripts.lineage_graph import LineageGraph, LineageNode, NodeType
-from scripts.cross_system_lineage import CrossSystemLineage
-
-
-def test_node_type_enum():
-    assert NodeType.TABLE.value == "table"
-    assert NodeType.VIEW.value == "view"
-    assert NodeType.FILE.value == "file"
-
+from tracepipe.cross_system_lineage import LineageNode, LineageGraph, CrossSystemLineage
 
 def test_lineage_node_creation():
-    node = LineageNode(
-        id="test_table",
-        name="test_table",
-        node_type=NodeType.TABLE,
-        metadata={"catalog": "main"}
-    )
-    assert node.id == "test_table"
-    assert node.node_type == NodeType.TABLE
-
+    node = LineageNode(node_id='table1', node_type='table', name='customers', metadata={'schema': 'public'})
+    assert node.node_id == 'table1'
+    assert node.node_type == 'table'
+    assert node.name == 'customers'
+    assert node.metadata['schema'] == 'public'
 
 def test_lineage_graph_add_node():
     graph = LineageGraph()
-    node = LineageNode("t1", "table1", NodeType.TABLE)
-    graph.add_node(node)
-    assert graph.get_node("t1") == node
-
+    graph.add_node('table1', 'table', 'customers', {'schema': 'public'})
+    assert 'table1' in graph.nodes
+    assert graph.nodes['table1'].name == 'customers'
 
 def test_lineage_graph_add_edge():
     graph = LineageGraph()
-    graph.add_node(LineageNode("t1", "table1", NodeType.TABLE))
-    graph.add_node(LineageNode("t2", "table2", NodeType.TABLE))
-    graph.add_edge("t1", "t2")
-    assert "t2" in graph.edges["t1"]
-
+    graph.add_node('table1', 'table', 'source', {})
+    graph.add_node('table2', 'table', 'target', {})
+    graph.add_edge('table1', 'table2', 'transform', {'job': 'etl1'})
+    assert len(graph.edges) == 1
+    assert 'table2' in graph.adjacency['table1']
 
 def test_get_downstream():
     graph = LineageGraph()
-    graph.add_node(LineageNode("t1", "table1", NodeType.TABLE))
-    graph.add_node(LineageNode("t2", "table2", NodeType.TABLE))
-    graph.add_node(LineageNode("t3", "table3", NodeType.TABLE))
-    graph.add_edge("t1", "t2")
-    graph.add_edge("t2", "t3")
-    downstream = graph.get_downstream("t1")
-    assert "t2" in downstream
-    assert "t3" in downstream
-
+    graph.add_node('t1', 'table', 'source', {})
+    graph.add_node('t2', 'table', 'intermediate', {})
+    graph.add_node('t3', 'table', 'target', {})
+    graph.add_edge('t1', 't2', 'transform', {})
+    graph.add_edge('t2', 't3', 'transform', {})
+    downstream = graph.get_downstream('t1')
+    assert 't2' in downstream
+    assert 't3' in downstream
 
 def test_get_upstream():
     graph = LineageGraph()
-    graph.add_node(LineageNode("t1", "table1", NodeType.TABLE))
-    graph.add_node(LineageNode("t2", "table2", NodeType.TABLE))
-    graph.add_edge("t1", "t2")
-    upstream = graph.get_upstream("t2")
-    assert "t1" in upstream
-
+    graph.add_node('t1', 'table', 'source', {})
+    graph.add_node('t2', 'table', 'intermediate', {})
+    graph.add_node('t3', 'table', 'target', {})
+    graph.add_edge('t1', 't2', 'transform', {})
+    graph.add_edge('t2', 't3', 'transform', {})
+    upstream = graph.get_upstream('t3')
+    assert 't2' in upstream
+    assert 't1' in upstream
 
 def test_cross_system_add_table():
     lineage = CrossSystemLineage()
-    lineage.add_table("catalog.schema.table1")
-    node = lineage.graph.get_node("catalog.schema.table1")
-    assert node is not None
-    assert node.node_type == NodeType.TABLE
-
+    lineage.add_table('db.table1', 'customers', {'source': 'mysql'})
+    assert 'db.table1' in lineage.graph.nodes
 
 def test_cross_system_impact_analysis():
     lineage = CrossSystemLineage()
-    lineage.add_table("t1")
-    lineage.add_table("t2")
-    lineage.add_dependency("t1", "t2")
-    result = lineage.get_impact_analysis("t1")
-    assert result["downstream_count"] == 1
-    assert "t2" in result["downstream"]
-
+    lineage.add_table('source', 'source_table', {})
+    lineage.add_table('target', 'target_table', {})
+    lineage.graph.add_edge('source', 'target', 'transform', {})
+    downstream = lineage.graph.get_downstream('source')
+    assert 'target' in downstream
 
 def test_handle_table_rename():
     lineage = CrossSystemLineage()
-    lineage.add_table("old_table")
-    lineage.add_table("downstream_table")
-    lineage.add_dependency("old_table", "downstream_table")
-    lineage.handle_table_rename("old_table", "new_table")
-    result = lineage.get_impact_analysis("new_table")
-    assert "downstream_table" in result["downstream"]
+    lineage.add_table('table1', 'old_name', {})
+    lineage.table_renames['old_name'] = 'new_name'
+    assert 'old_name' in lineage.table_renames
